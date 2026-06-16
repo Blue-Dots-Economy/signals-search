@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { ensureConsumerGroup, readBatch, ackMessages } from './stream_consumer.js';
 
 let redisC: StartedTestContainer;

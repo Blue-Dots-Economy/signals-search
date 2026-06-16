@@ -1,4 +1,4 @@
-import type Redis from 'ioredis';
+import type { Redis } from 'ioredis';
 
 export type ItemEvent = {
   item_network: string;
@@ -13,7 +13,7 @@ export type StreamMessage = { id: string; event: ItemEvent };
 
 export async function ensureConsumerGroup(redis: Redis, stream: string, group: string): Promise<void> {
   try {
-    await (redis as any).xgroup('CREATE', stream, group, '$', 'MKSTREAM');
+    await redis.xgroup('CREATE', stream, group, '$', 'MKSTREAM');
   } catch (err) {
     if (!(err instanceof Error) || !err.message.includes('BUSYGROUP')) throw err;
   }
@@ -35,7 +35,7 @@ function fieldsToEvent(fields: string[]): ItemEvent {
 export async function readBatch(
   redis: Redis, stream: string, group: string, consumer: string, count: number, blockMs: number,
 ): Promise<StreamMessage[]> {
-  const res = (await (redis as any).xreadgroup(
+  const res = (await redis.xreadgroup(
     'GROUP', group, consumer, 'COUNT', count, 'BLOCK', blockMs, 'STREAMS', stream, '>',
   )) as [string, [string, string[]][]][] | null;
   if (!res) return [];
@@ -44,5 +44,5 @@ export async function readBatch(
 }
 
 export async function ackMessages(redis: Redis, stream: string, group: string, ids: string[]): Promise<void> {
-  if (ids.length) await (redis as any).xack(stream, group, ...ids);
+  if (ids.length) await redis.xack(stream, group, ...ids);
 }
