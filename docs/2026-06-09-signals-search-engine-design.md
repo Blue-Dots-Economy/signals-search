@@ -161,7 +161,7 @@ Drop: FAISS, `index_store`/rebuild-from-DB (pgvector self-maintains), Rust. The 
 | Column | Type | Notes |
 |---|---|---|
 | `item_network`,`item_domain`,`item_type`,`item_id` | (match `items`) | composite PK; FK → `items` `ON DELETE CASCADE` |
-| `embedding` | `vector(D)` | D configurable per deployment, **≤ 2000** for HNSW (default 768); L2-normalized |
+| `embedding` | `vector(D)` | D configurable per deployment, **≤ 2000** for HNSW (default 1024 — BGE-M3); L2-normalized |
 | `geo` | `geography(MultiPoint,4326)` | all `item_locations` points; GiST-indexed |
 | `item_type_filter` / denormalized filter fields | as needed | to support hard filters without joining `items` |
 | `lifecycle_status` | text | copied for `WHERE lifecycle_status='live'` |
@@ -187,13 +187,15 @@ Per item-type schema property, a new optional marker:
 
 ---
 
-## 6. Embedding Provider (pluggable)
+## 6. Embedding Provider (pluggable, OSS-first)
 
 - Interface: `embed(texts: string[]) -> vector[]`; deployment selects provider + model + output dimension via config.
-- **Default:** hosted provider (reuse the dpg-scoring/jobstack Gemini integration pattern), with **output dimension capped ≤ 2000** so pgvector HNSW can index (e.g. 768 default; `gemini-embedding-001` supports configurable output dimensionality).
-- Local/self-hosted model is a later plug-in (offline/air-gapped/cost-sensitive) — not built in V1.
+- **Default: a self-hostable open-source model — BGE-M3 (Apache-2.0, 1024-dim, multilingual).** This is an open-source DPG, so the default path must be OSS **in all cases**; a proprietary hosted API cannot be the default. Self-hosting also means **no per-token cost, no rate limits, and no text leaves the deployment** (matters for a DPG even though only public attributes are embedded).
+- **Optional hosted providers (opt-in per deployment), same interface:** Gemini `gemini-embedding-001` (~$0.15/1M tokens standard, ~250–450 ms/call, and a data-governance caveat — its free tier uses submitted content to improve Google's products), OpenAI, Voyage. *(EmbeddingGemma-300M is attractive technically but its Gemma license is open-weights/use-restricted, not OSI-OSS — so it is an option, not the default.)*
+- **Constraints:** output dimension must be **≤ 2000** for pgvector HNSW (BGE-M3 = 1024 ✓). **One model per instance** — query and corpus must be embedded by the same model (`model_version` guards this); cross-deployment vectors are not comparable (fine for V1 single-instance).
 - Vectors L2-normalized before storage (cosine via normalized inner product).
 - Redis embed-cache keyed by `(model_version, hash(text))`.
+- Self-host footprint: BGE-M3 runs via Sentence Transformers / vLLM / ONNX on CPU or a small GPU. Corpus embedding is a one-time + incremental job; per query it's one short string; the `intent.item.id` anchor path needs no embedding at all.
 
 ---
 
@@ -215,7 +217,7 @@ Per item-type schema property, a new optional marker:
 - Search returns **only `lifecycle_status='live'`** items; never `draft`/`paused`.
 - Returned `item_state` is the **masked** public state (parity with today's public fetch).
 - `/v1/search` requires a valid API key; no anonymous access.
-- Embedding text sent to an external provider must be guaranteed free of private fields (same risk class dpg-scoring manages by redaction).
+- With the **default self-hosted model, embedding text never leaves the deployment**. If an optional hosted provider is enabled, the embedded text must be guaranteed free of private fields (only public attributes are vectorized — same risk class dpg-scoring manages by redaction).
 
 ---
 
@@ -238,7 +240,7 @@ Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the i
 
 ## 11. Scale & Latency Analysis
 
-**At target (≤100k/instance, ~25k typical):** trivial for pgvector. HNSW build = seconds; ANN query < 5 ms; geo `ST_DWithin` < 20 ms. Memory: 768-d float4 ≈ 3 KB/row → 100k ≈ 300 MB vectors + ~2× HNSW graph ≈ 0.6–1 GB on the shared PG.
+**At target (≤100k/instance, ~25k typical):** trivial for pgvector. HNSW build = seconds; ANN query < 5 ms; geo `ST_DWithin` < 20 ms. Memory: 1024-d float4 ≈ 4 KB/row → 100k ≈ 400 MB vectors + ~2× HNSW graph ≈ 0.8–1.2 GB on the shared PG.
 
 **Latency:** dominant cost is the **external embedding hop for free-text** (~100–400 ms), not the search. `item_id` path skips embedding → < 30 ms total. Free-text → 1 embedding call + < 30 ms; cache repeats. Comfortably < 1 s.
 
@@ -247,7 +249,6 @@ Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the i
 ---
 
 ## 12. Open Questions / To Confirm on Review
-- Default embedding dimension (768 vs 1536) and provider/model defaults per deployment.
 - Whether the optional rules re-ranker is in V1 or deferred.
 - Whether result cache TTL / rate-limit thresholds need per-caller (org) tuning.
 

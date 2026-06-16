@@ -27,7 +27,7 @@ flowchart LR
   subgraph SearchSvc["signals-search (NEW repo · TS/Fastify)"]
     API["Search API<br/>POST /v1/search"]
     WRK["Ingestion worker<br/>+ reconciliation sweep"]
-    EMB["Embedding provider<br/>pluggable · hosted default"]
+    EMB["Embedding provider<br/>pluggable · OSS default (BGE-M3)"]
   end
 
   subgraph Redis["Shared Redis"]
