@@ -56,4 +56,8 @@ export class ItemSearchRepo {
       SELECT content_hash FROM item_search WHERE item_id = ${item_id} LIMIT 1`;
     return rows[0]?.content_hash ?? null;
   }
+
+  async delete(item_id: string): Promise<void> {
+    await this.sql`DELETE FROM item_search WHERE item_id = ${item_id}`;
+  }
 }
