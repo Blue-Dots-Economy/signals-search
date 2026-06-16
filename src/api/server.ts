@@ -4,6 +4,7 @@ import type { Sql } from 'postgres';
 import type { Redis } from 'ioredis';
 import type { Embedder } from '../embedding/provider.js';
 import type { NetworkRegistry } from '../config/network_registry.js';
+import { registerSearchRoute } from './search_route.js';
 
 export type ApiDeps = {
   sql: Sql;
@@ -20,6 +21,6 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.get('/health', async () => ({ status: 'ok' }));
-  // registerSearchRoute(app, opts.deps)  // added in Task 8
+  registerSearchRoute(app, opts.deps);
   return app;
 }
