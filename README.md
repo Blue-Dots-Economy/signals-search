@@ -4,7 +4,7 @@ Search & discovery service for **Signals-DPG**. Provides authenticated, ranked-o
 
 This is **V1** — a deliberate stepping stone toward the future Beckn/NFH discovery service. It reads the existing **Signals-DPG database only** (single instance, no federation) and replaces the legacy Elasticsearch-based discovery design with Postgres-native search on the shared Postgres instance.
 
-> Status: design phase. See the design + architecture docs before implementing.
+> Status: ingestion pipeline implemented (Plan 1); query API is Plan 2.
 
 ## What it answers
 
@@ -28,7 +28,7 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 - **TypeScript + Fastify + Drizzle ORM**
 - **PostgreSQL** with `pgvector` (similarity) and `postgis` (geospatial), on the shared Signals-DPG database
 - **Redis** (shared) — ingestion queue + result/embedding cache
-- **Pluggable embedding provider** — hosted default (configurable per deployment), output dimension ≤ 2000 for HNSW indexing
+- **Embedding & reranking via HuggingFace TEI** (in-cluster, OpenAI-compatible) — OSS default **BGE-M3** (Apache-2.0, 1024-dim) for embeddings + optional **bge-reranker-v2-m3** cross-encoder; hosted APIs (Gemini/OpenAI/Voyage) opt-in via config base_url. Output dimension ≤ 2000 for HNSW indexing
 
 ## Key design points
 
@@ -52,7 +52,15 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 
 ## Development
 
-> To be filled in as the service is scaffolded (install, env, migrations, run worker + API, tests).
+```bash
+pnpm install
+pnpm test        # vitest + testcontainers (Docker required; first run builds a pgvector+postgis image)
+pnpm typecheck
+pnpm build       # tsc -> dist/ (+ copies migration SQL)
+pnpm worker      # run the ingestion worker (needs DATABASE_URL, REDIS_URL, EMBEDDING_BASE_URL)
+```
+
+Tests use Testcontainers; ensure Docker is running. The Postgres test image (`test/docker/Dockerfile.postgres`) bundles pgvector + PostGIS.
 
 ## License
 
