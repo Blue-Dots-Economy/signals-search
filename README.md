@@ -28,7 +28,7 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 - **TypeScript + Fastify + Drizzle ORM**
 - **PostgreSQL** with `pgvector` (similarity) and `postgis` (geospatial), on the shared Signals-DPG database
 - **Redis** (shared) — ingestion queue + result/embedding cache
-- **Pluggable embedding provider** — self-hostable OSS default (BGE-M3, Apache-2.0, 1024-dim); hosted APIs (Gemini/OpenAI/Voyage) opt-in. Output dimension ≤ 2000 for HNSW indexing
+- **Embedding & reranking via HuggingFace TEI** (in-cluster, OpenAI-compatible) — OSS default **BGE-M3** (Apache-2.0, 1024-dim) for embeddings + optional **bge-reranker-v2-m3** cross-encoder; hosted APIs (Gemini/OpenAI/Voyage) opt-in via config base_url. Output dimension ≤ 2000 for HNSW indexing
 
 ## Key design points
 

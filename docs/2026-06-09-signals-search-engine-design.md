@@ -197,6 +197,13 @@ Per item-type schema property, a new optional marker:
 - Redis embed-cache keyed by `(model_version, hash(text))`.
 - Self-host footprint: BGE-M3 runs via Sentence Transformers / vLLM / ONNX on CPU or a small GPU. Corpus embedding is a one-time + incremental job; per query it's one short string; the `intent.item.id` anchor path needs no embedding at all.
 
+### Serving & interface
+
+- **Serving:** BGE-M3 runs behind **HuggingFace TEI (Text Embeddings Inference)** as a dedicated in-cluster service deployed by `bluedots-automation` (CPU by default, GPU optional). TEI also serves the cross-encoder reranker (see §7), so **one runtime covers both embeddings and reranking**.
+- **Interface:** TEI exposes an **OpenAI-compatible `POST /v1/embeddings`** (and `/rerank`). `signals-search` holds a thin `EmbeddingProvider.embed(texts)` adapter that POSTs to a configurable `EMBEDDING_BASE_URL` + `EMBEDDING_MODEL` (+ optional `EMBEDDING_API_KEY`). Default base_url → the in-cluster TEI service; opt-in hosted (OpenAI / Gemini gateway) = change base_url + model in config. Same adapter either way.
+- Both the **ingestion worker** (batch) and the **query API** (single text) call this shared TEI service; it scales independently of the API pods.
+- *Alternative (lite mode):* in-process ONNX (`onnxruntime-node` / transformers.js) avoids a separate service but couples model+API, blocks the event loop on CPU, and can't share a GPU — acceptable for small/dev deployments only. **Default is the TEI service.**
+
 ---
 
 ## 7. Query Flow (read path)
@@ -205,9 +212,19 @@ Per item-type schema property, a new optional marker:
 2. Validate `context` (networkId/domain/itemType) against the `network.json` interaction matrix.
 3. Resolve query vector: `intent.item.id` → stored vector (no embed call); `intent.textSearch` → embed (cached); neither → skip vector ranking.
 4. Build SQL: `WHERE lifecycle_status='live'` + partition prune on target network/domain + `intent.filters[]` + `ST_DWithin(geo, $point, $distanceMeters)` for each `intent.spatial[]` clause.
-5. Rank: if a vector is present, `ORDER BY embedding <=> $qvec` (HNSW); else `ORDER BY ST_Distance(...)`. Optional distance tiebreak/boost.
-6. Apply `message.pagination` (`limit`/`offset`); join `items` for masked `item_state`; emit `message.items` + `message.meta`, echoing `context`.
-7. Cache the response in Redis (short TTL, ~30–60 s, keyed by the normalized request incl. query-embedding hash).
+5. **Stage-1 retrieval:** if a vector is present, `ORDER BY embedding <=> $qvec` (HNSW) → top-N; else `ORDER BY ST_Distance(...)`. Optional distance tiebreak/boost.
+6. **Stage-2 rerank (optional, see §7a):** if enabled, re-score the top-N and take top-k.
+7. Apply `message.pagination` (`limit`/`offset`); join `items` for masked `item_state`; emit `message.items` + `message.meta`, echoing `context`.
+8. Cache the response in Redis (short TTL, ~30–60 s, keyed by the normalized request incl. query-embedding hash + rerank flag).
+
+### 7a. Ranking & Reranking (two-stage, pluggable)
+
+- **Stage 1 — retrieve (always):** pgvector ANN cosine over `item_search` (`vector_cosine_ops`, `<=>`), after structured + geo hard-filters → top-N candidates.
+- **Stage 2 — rerank (optional, config/param-gated):**
+  - **`none` (default):** stage-1 order. When `intent.spatial` is present, optionally **blend geo distance** into the score (configurable weight) so "near me" ranks proximity, not just similarity.
+  - **`cross_encoder` (recommended opt-in):** **`bge-reranker-v2-m3`** (Apache-2.0, 0.6B, 100+ langs) served by the **same TEI runtime** (`/rerank`), re-scoring the top-N (N≈10–30) → top-k. Adds ~50–100 ms GPU / ~130 ms CPU — within the <1 s budget at small N. Best precision lift for `textSearch`; the `intent.item.id` anchor path can skip it.
+  - **`rules` (deferred):** jobstack-style deterministic boosts/penalties (distance, structured-field affinity, Jaro-Winkler) as a post-vector stage — not in V1 unless a use case needs it.
+- **V1 ships:** the two-stage interface with `none` + geo-blend default and `cross_encoder` available via config (and an optional per-request rerank hint in `intent`). Ranking metric is cosine only (vectors L2-normalized at write).
 
 ---
 
@@ -231,10 +248,13 @@ Per item-type schema property, a new optional marker:
 ## 10. Components & Repository
 
 New repo **`signals-search`** (TS/Fastify/Drizzle), two processes:
-- **Ingestion worker:** drains the Redis queue Signals publishes on item write/delete + reconciliation sweep; serializes → embeds → upserts `item_search`.
-- **API service:** `POST /v1/search` — sync Beckn-aligned `context`/`message` envelope (auth, interaction-matrix validation, filter-then-rank, Redis cache).
+- **Ingestion worker:** drains the Redis queue Signals publishes on item write/delete + reconciliation sweep; serializes → embeds (via TEI) → upserts `item_search`.
+- **API service:** `POST /v1/search` — sync Beckn-aligned `context`/`message` envelope (auth, interaction-matrix validation, filter-then-rank, optional rerank, Redis cache).
 
-Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the item write/delete path; `vectorize` markers in `network.json` schemas; enable `vector` + `postgis` extensions; `item_search` migration.
+Plus a shared infra dependency:
+- **TEI embedding/rerank service:** HuggingFace TEI serving BGE-M3 (`/v1/embeddings`) and `bge-reranker-v2-m3` (`/rerank`), deployed in-cluster by `bluedots-automation`. Called by both the worker and the API.
+
+Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the item write/delete path; `vectorize` markers in `network.json` schemas; enable `vector` + `postgis` extensions; `item_search` migration in the authoritative `schema.sql`.
 
 ---
 
@@ -242,15 +262,15 @@ Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the i
 
 **At target (≤100k/instance, ~25k typical):** trivial for pgvector. HNSW build = seconds; ANN query < 5 ms; geo `ST_DWithin` < 20 ms. Memory: 1024-d float4 ≈ 4 KB/row → 100k ≈ 400 MB vectors + ~2× HNSW graph ≈ 0.8–1.2 GB on the shared PG.
 
-**Latency:** dominant cost is the **external embedding hop for free-text** (~100–400 ms), not the search. `item_id` path skips embedding → < 30 ms total. Free-text → 1 embedding call + < 30 ms; cache repeats. Comfortably < 1 s.
+**Latency:** dominant cost is the **embedding hop for free-text** (in-cluster TEI, low-tens of ms warm), not the ANN search. `item_id` path skips embedding → < 30 ms total. Free-text → 1 embedding call + < 30 ms; cache repeats. Optional cross-encoder rerank adds ~50–100 ms GPU / ~130 ms CPU over top-N (N≈10–30). All paths comfortably < 1 s.
 
 **Where it strains (max-profiles question):** providers are typically a fraction of seekers (~10–20%), and a query targets the opposite domain, so the searchable set per query is the target-domain subset — extra headroom. The shared-PG / single-instance / HNSW design is comfortable to ~**500k–1M rows/instance**. Beyond that, in order: HNSW memory + `maintenance_work_mem` for builds; shared-instance contention (aggregator + Signals + search on one PG); embedding throughput under churn (hosted API rate limits). Escape hatches (already latent): **partition-wise HNSW** (per network/domain partition), a **read replica** for search, `halfvec`/quantization, or an external vector store. None needed at stated scale.
 
 ---
 
 ## 12. Open Questions / To Confirm on Review
-- Whether the optional rules re-ranker is in V1 or deferred.
 - Whether result cache TTL / rate-limit thresholds need per-caller (org) tuning.
+- TEI deployment sizing (CPU vs GPU) per environment, and whether the reranker is co-located in the same TEI pod or a separate one.
 
 ---
 
@@ -269,7 +289,7 @@ The work spans **three repos** (a fourth is deferred). Decisions:
 
 | Repo | Owns | Changes for this work |
 |---|---|---|
-| **bluedots-automation** | EKS + Helm + OpenTofu; shared Postgres bootstrap (`common-services/.../00-bootstrap.sh`, superuser), Redis, secrets/env, deploy order, service-user/apikey provisioning | Add `CREATE EXTENSION vector; CREATE EXTENSION postgis;` to bootstrap; new `search` Helm subchart (worker + API deploy, HPA, ingress); secrets (embedding key, DB/Redis URLs); wire into `install.sh` deploy order after `signals` |
+| **bluedots-automation** | EKS + Helm + OpenTofu; shared Postgres bootstrap (`common-services/.../00-bootstrap.sh`, superuser), Redis, secrets/env, deploy order, service-user/apikey provisioning | Add `CREATE EXTENSION vector; CREATE EXTENSION postgis;` to bootstrap; new `search` Helm subchart (worker + API deploy, HPA, ingress); **TEI embedding/rerank service** (BGE-M3 + bge-reranker-v2-m3, CPU/GPU); secrets (`EMBEDDING_BASE_URL`/model, DB/Redis URLs); wire into `install.sh` deploy order after `signals` |
 | **Signals-DPG** | Authoritative `schema.sql` DDL for `dpg` DB; item write path (`ioredis` client + best-effort `.catch(warn)` precedent); dev example schemas | Add `item_search` table + extensions to `schema.sql` source + re-bundle; add `vectorize` markers to `examples/schemas/`; add best-effort enqueue after create/update/delete |
 | **signals-search** | The service | `item_search` read-model; embedding provider; ingestion worker + reconciliation/backfill sweep; `POST /v1/search` (auth, interaction-matrix validation, filter-then-rank, Redis cache) |
 | *bluedots-allusecase-schemas (deferred)* | *Canonical prod network.json* | *Receives markers + schemas later — Signals-DPG#176* |

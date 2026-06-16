@@ -27,7 +27,7 @@ flowchart LR
   subgraph SearchSvc["signals-search (NEW repo · TS/Fastify)"]
     API["Search API<br/>POST /v1/search"]
     WRK["Ingestion worker<br/>+ reconciliation sweep"]
-    EMB["Embedding provider<br/>pluggable · OSS default (BGE-M3)"]
+    EMB["TEI service<br/>BGE-M3 /v1/embeddings + bge-reranker /rerank<br/>OSS default · hosted opt-in"]
   end
 
   subgraph Redis["Shared Redis"]
@@ -107,9 +107,13 @@ sequenceDiagram
     A->>E: embed(query text) [Redis-cached by text hash]
     E-->>A: query vector
   end
-  A->>V: WHERE live + filters[] + ST_DWithin(geo,$pt,$distanceMeters)<br/>ORDER BY embedding <=> $qvec LIMIT/OFFSET (pagination)
-  V-->>A: ranked item keys + nearest distance
-  A->>IT: join → masked item_state
+  A->>V: WHERE live + filters[] + ST_DWithin(geo,$pt,$distanceMeters)<br/>ORDER BY embedding <=> $qvec → top-N (stage 1)
+  V-->>A: top-N candidates + nearest distance
+  opt rerank enabled
+    A->>E: /rerank top-N via bge-reranker-v2-m3 (stage 2)
+    E-->>A: reranked top-k
+  end
+  A->>IT: join → masked item_state (after pagination)
   A-->>C: context + message.items[] + meta (response cached ~30–60s)
 ```
 
@@ -117,13 +121,14 @@ sequenceDiagram
 
 ## 5. Latency at a glance
 
-| Path | Embedding call? | Typical latency |
-|---|---|---|
-| `anchor.item_id` ("relevant to me") | No (stored vector) | < 30 ms (in-DB) |
-| `anchor.text` ("relevant to X") | Yes (cached on repeat) | ~100–400 ms embed + < 30 ms search |
-| `near` only ("matches near me") | No | < 30 ms (PostGIS) |
+| Path | Embedding call? | Rerank? | Typical latency |
+|---|---|---|---|
+| `intent.item.id` ("relevant to me") | No (stored vector) | optional | < 30 ms (in-DB) |
+| `intent.textSearch` ("relevant to X") | Yes (in-cluster TEI, cached on repeat) | optional | low-tens ms embed + < 30 ms search |
+| `near` only ("matches near me") | No | usually no | < 30 ms (PostGIS) |
+| any + cross-encoder rerank | — | yes | + ~50–100 ms GPU / ~130 ms CPU over top-N |
 
-The external embedding hop is the only thing near the budget; ANN + geo are single-digit-to-low-tens of ms at ≤100k rows. Well within the < 1 s target.
+In-cluster TEI embedding + ANN + geo are tens-of-ms at ≤100k rows; the optional rerank is the largest add-on and still leaves headroom under the < 1 s target.
 
 ---
 
@@ -131,8 +136,9 @@ The external embedding hop is the only thing near the budget; ANN + geo are sing
 
 | Repo | Change |
 |---|---|
-| **signals-search** (new) | Ingestion worker, Search API, embedding-provider abstraction, `item_search` migration |
-| **Signals-DPG** (existing) | Best-effort enqueue in item write/delete path; `vectorize` markers in `network.json`; enable `vector` + `postgis` extensions |
+| **signals-search** (new) | Ingestion worker, Search API, embedding-provider adapter (OpenAI-compatible), `item_search` read-model |
+| **Signals-DPG** (existing) | Best-effort enqueue in item write/delete path; `vectorize` markers in `network.json`; `item_search` DDL + `vector`/`postgis` extensions in authoritative `schema.sql` |
+| **bluedots-automation** | `vector`+`postgis` in PG bootstrap; search Helm subchart; **TEI embedding/rerank service** (BGE-M3 + bge-reranker-v2-m3); secrets/deploy wiring |
 | **Shared Postgres** | New `item_search` table (partitioned by network/domain); pgvector + PostGIS enabled |
 | **Shared Redis** | Ingestion queue + result/embedding cache |
 
@@ -140,7 +146,7 @@ The external embedding hop is the only thing near the budget; ANN + geo are sing
 
 ## 7. Boundaries (single-purpose units)
 
-- **Embedding provider** — `embed(texts) → vectors`; swap hosted/local by config. Knows nothing about Postgres or HTTP.
+- **Embedding/rerank service (TEI)** — `embed(texts) → vectors` and `rerank(query, docs) → scores` over an OpenAI-compatible HTTP interface; the in-cluster default, swappable to a hosted provider by config base_url. Knows nothing about Postgres or the search domain.
 - **Ingestion worker** — owns "an item changed → its `item_search` row is correct". Idempotent via `content_hash`; self-healing via reconciliation.
 - **Search API** — owns "a query → ranked, authorized, masked results". Stateless; all index work pushed into Postgres.
 - **`item_search` table** — the index; the only shared contract between worker and API.
