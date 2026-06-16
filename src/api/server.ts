@@ -17,7 +17,11 @@ export type ApiDeps = {
 };
 
 export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    // Redact credential headers so a raw API key can never reach the logs,
+    // even if a custom/error serializer ever emits request headers.
+    logger: { redact: ['req.headers["x-api-key"]', 'req.headers.authorization'] },
+  });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.get('/health', async () => ({ status: 'ok' }));
