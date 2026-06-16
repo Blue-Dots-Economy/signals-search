@@ -25,4 +25,16 @@ describe('SearchRequestSchema', () => {
     const bad = { ...valid, context: { ...valid.context, networkId: undefined } };
     expect(() => SearchRequestSchema.parse(bad)).toThrow();
   });
+  it('rejects a numeric comparator filter whose value is not a finite number', () => {
+    const bad = { context: valid.context, message: { intent: { filters: [{ op: 'gt', target: 'item_state.age', value: 'abc' }] } } };
+    expect(() => SearchRequestSchema.parse(bad)).toThrow();
+  });
+  it("rejects an 'in' filter whose value is not an array", () => {
+    const bad = { context: valid.context, message: { intent: { filters: [{ op: 'in', target: 'item_state.tag', value: 'x' }] } } };
+    expect(() => SearchRequestSchema.parse(bad)).toThrow();
+  });
+  it('accepts a valid numeric gt filter', () => {
+    const ok = { context: valid.context, message: { intent: { filters: [{ op: 'gt', target: 'item_state.age', value: 18 }] } } };
+    expect(() => SearchRequestSchema.parse(ok)).not.toThrow();
+  });
 });
