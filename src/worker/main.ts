@@ -2,7 +2,7 @@ import postgres from 'postgres';
 import { Redis } from 'ioredis';
 import { loadConfig } from '../config.js';
 import { runMigrations } from '../db/migrate.js';
-import { ItemSearchRepo } from '../db/item_search_repo.js';
+import { ItemSearchRepo, ITEM_SEARCH_VECTOR_DIM } from '../db/item_search_repo.js';
 import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
 import { ensureConsumerGroup, readBatch, ackMessages } from '../ingest/stream_consumer.js';
 import { processEvent } from './process_event.js';
@@ -18,6 +18,12 @@ function makeFieldsFor(): (n: string, d: string, t: string) => VectorizeField[] 
 
 async function main() {
   const cfg = loadConfig();
+  if (cfg.embedding.dim !== ITEM_SEARCH_VECTOR_DIM) {
+    throw new Error(
+      `EMBEDDING_DIM=${cfg.embedding.dim} but item_search.embedding is vector(${ITEM_SEARCH_VECTOR_DIM}); ` +
+      `a different embedding dimension requires a new migration.`,
+    );
+  }
   const sql = postgres(cfg.databaseUrl, { max: 8 });
   const redis = new Redis(cfg.redisUrl);
   const repo = new ItemSearchRepo(sql, cfg.embedding.dim);

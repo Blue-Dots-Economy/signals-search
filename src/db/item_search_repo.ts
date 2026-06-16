@@ -1,5 +1,9 @@
 import type { Sql } from 'postgres';
 
+/** Fixed embedding dimension of the item_search.embedding column (vector(1024)).
+ *  Changing the embedding model's output dim requires a new migration. */
+export const ITEM_SEARCH_VECTOR_DIM = 1024;
+
 export type ItemLocation = { lat: number; lng: number; label?: string };
 
 export type UpsertInput = {
