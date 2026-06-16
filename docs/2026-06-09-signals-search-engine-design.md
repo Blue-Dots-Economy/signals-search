@@ -194,7 +194,6 @@ Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the i
 ---
 
 ## 12. Open Questions / To Confirm on Review
-- Spec/repo location + version control: workspace root is not a git repo; the new `signals-search` repo doesn't exist yet, and Signals changes should follow branch-per-plan. Decide where this spec and the Signals-side changes are committed.
 - Default embedding dimension (768 vs 1536) and provider/model defaults per deployment.
 - Whether the optional rules re-ranker is in V1 or deferred.
 - Whether result cache TTL / rate-limit thresholds need per-caller (org) tuning.
@@ -203,3 +202,40 @@ Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the i
 
 ## 13. Future (NFH stepping stone)
 The future Beckn/NFH discovery service subscribes to Beckn catalogs, mirrors each catalog into Postgres on update, and serves queries from the same pgvector + PostGIS index. V1's ingestion contract (enqueue → worker → `item_search`) and query API are designed so the catalog-subscription source can be swapped in behind the same index and endpoint without reworking the query layer.
+
+---
+
+## 14. Cross-Repo Implementation Plan
+
+The work spans **three repos** (a fourth is deferred). Decisions:
+- **`vectorize` markers** → added to **Signals-DPG `examples/schemas/`** for V1 (NOT the dedicated schemas repo yet). Moving them to `bluedots-allusecase-schemas` is tracked separately (Signals-DPG#176).
+- **`item_search` DDL + `vector`/`postgis` extensions** → declared in **Signals-DPG's authoritative `schema.sql`** (the single idempotent DDL authority for the shared `dpg` DB, applied by the deploy migrate-job). The bundling problem this adds to is tracked separately (Signals-DPG#177). `signals-search` keeps only a read-model (Drizzle types), not migration ownership.
+
+### Repo ownership
+
+| Repo | Owns | Changes for this work |
+|---|---|---|
+| **bluedots-automation** | EKS + Helm + OpenTofu; shared Postgres bootstrap (`common-services/.../00-bootstrap.sh`, superuser), Redis, secrets/env, deploy order, service-user/apikey provisioning | Add `CREATE EXTENSION vector; CREATE EXTENSION postgis;` to bootstrap; new `search` Helm subchart (worker + API deploy, HPA, ingress); secrets (embedding key, DB/Redis URLs); wire into `install.sh` deploy order after `signals` |
+| **Signals-DPG** | Authoritative `schema.sql` DDL for `dpg` DB; item write path (`ioredis` client + best-effort `.catch(warn)` precedent); dev example schemas | Add `item_search` table + extensions to `schema.sql` source + re-bundle; add `vectorize` markers to `examples/schemas/`; add best-effort enqueue after create/update/delete |
+| **signals-search** | The service | `item_search` read-model; embedding provider; ingestion worker + reconciliation/backfill sweep; `POST /v1/search` (auth, interaction-matrix validation, filter-then-rank, Redis cache) |
+| *bluedots-allusecase-schemas (deferred)* | *Canonical prod network.json* | *Receives markers + schemas later — Signals-DPG#176* |
+
+### Ordering (phases; one `feat/` branch + rolling PR per repo, merged in phase order)
+
+- **Phase 0 — Contracts (no deploy):** freeze in `signals-search` — (a) Redis ingestion queue name + payload, (b) `vectorize` marker convention, (c) `item_search` DDL + env-var names. Everything depends on these.
+- **Phase 1 — Foundations (parallel; gates Phase 2):**
+  - automation: `vector` + `postgis` in `00-bootstrap.sh`.
+  - Signals-DPG: mirror extensions + `item_search` in authoritative `schema.sql`, re-bundle.
+  - Signals-DPG: `vectorize` markers in `examples/schemas/` (AJV `strict:false` → markers pass through harmlessly).
+- **Phase 2 — signals-search core (depends on P1 extensions + P0 contracts):** read-model, embedding provider, ingestion worker **with backfill/reconciliation sweep** (reads `items` directly), `POST /v1/search`. **Search becomes functional via backfill without touching the Signals write path.**
+- **Phase 3 — Signals-DPG real-time enqueue (depends on P0 contract + P2 consumer):** best-effort `XADD` after create/update/delete (reuse `ioredis`). Additive + best-effort → low blast radius; sweep becomes the backstop.
+- **Phase 4 — automation deploy/provision (depends on P2 service):** search subchart, `migrate-job` wiring, secrets, insert into deploy order after `signals`; provision caller key if needed.
+- **Phase 5 — Cutover:** backfill ~25k items, verify recall + <1s latency, enable enqueue, point voice bots at `/v1/search`.
+
+**Rationale for order:** extensions before any DDL; contracts before producer/consumer; search ships useful via backfill *before* Signals is touched (lowest risk); the write-path change is a later additive enhancement; deploy wiring trails the service existing.
+
+### Related issues
+- `signals-search#1` — implement the search engine (this spec).
+- `Signals-DPG#176` — migrate use-case schemas examples → `bluedots-allusecase-schemas`.
+- `Signals-DPG#177` — refactor `schema.sql` to separate concerns + run selectively by argument.
+- Upstream: `Signals-DPG#169` (plan/estimate), `Signals-DPG#171` (implement search service).
