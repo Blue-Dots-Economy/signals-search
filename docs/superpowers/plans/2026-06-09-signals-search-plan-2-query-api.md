@@ -4,7 +4,7 @@
 
 **Goal:** Build the synchronous, Beckn-aligned `POST /v1/search` API for `signals-search` — authenticated, interaction-matrix-scoped, filter-then-rank over `item_search` (vector + geo + structured filters), with an optional cross-encoder rerank and a short-TTL Redis result cache.
 
-**Architecture:** Fastify API process in the same repo as the Plan 1 worker. Reuses Plan 1 building blocks (config, `OpenAiCompatibleEmbedder`, `item_search`, `resolveVectorizeFields`). Adds: a Beckn envelope (`context`/`message`), API-key auth against the shared Signals `apikey` table, a `network.json` loader exposing the **interaction matrix** + per-type vectorize fields, a filter-then-rank query builder (pgvector `<=>` + PostGIS `ST_DWithin`), an optional TEI `/rerank` stage, and Redis result caching. **Depends on Plan 1 being implemented.**
+**Architecture:** Fastify API process in the same repo as the Plan 1 worker. Reuses Plan 1 building blocks (config, `OpenAiCompatibleEmbedder`, `item_search`, `resolveVectorizeFields`). Adds: a Beckn envelope (`context`/`message`), API-key auth against the shared Signals `apikey` table, a `network.json` loader exposing the **interaction matrix** + per-type vectorize fields, a filter-then-rank query builder (pgvector `<=>` + PostGIS `ST_DWithin`), an optional TEI `/rerank` stage, and Redis result caching. It also hardens the shared `OpenAiCompatibleEmbedder` with a request timeout + bounded retry (Task 10) — a hung TEI call would otherwise block both the query request and the single-threaded ingestion loop. **Depends on Plan 1 being implemented.**
 
 **Tech Stack:** Fastify 5 + `fastify-type-provider-zod`, Zod, Drizzle/`postgres`, `ioredis`, Vitest + Testcontainers.
 
@@ -46,6 +46,8 @@ Add to `scripts`: `"api": "node dist/api/main.js"`. Then `pnpm install`.
   RERANK_DEFAULT: z.coerce.boolean().default(false),
   RESULT_TOPN: z.coerce.number().int().positive().default(50),
   CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(45),
+  EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+  EMBEDDING_MAX_RETRIES: z.coerce.number().int().nonnegative().default(2),
 ```
 
 ```typescript
@@ -55,6 +57,7 @@ Add to `scripts`: `"api": "node dist/api/main.js"`. Then `pnpm install`.
   rerank: { baseUrl?: string; model: string; defaultOn: boolean; topN: number };
   cache: { ttlSeconds: number };
 ```
+(The embedding timeout/retry knobs live on the existing `embedding` config group — extend it: `embedding: { ...; timeoutMs: number; maxRetries: number }`.)
 
 ```typescript
 // add to the returned object in loadConfig:
@@ -62,9 +65,11 @@ Add to `scripts`: `"api": "node dist/api/main.js"`. Then `pnpm install`.
     networkConfigPath: e.NETWORK_CONFIG_PATH,
     rerank: { baseUrl: e.RERANK_BASE_URL, model: e.RERANK_MODEL, defaultOn: e.RERANK_DEFAULT, topN: e.RESULT_TOPN },
     cache: { ttlSeconds: e.CACHE_TTL_SECONDS },
+    // extend the existing embedding group:
+    //   embedding: { ...existing, timeoutMs: e.EMBEDDING_TIMEOUT_MS, maxRetries: e.EMBEDDING_MAX_RETRIES },
 ```
 
-Also add to `.env.example`: `API_PORT=3100`, `NETWORK_CONFIG_PATH=./test/fixtures/networks`, `RERANK_BASE_URL=http://signals-search-embeddings:8081`, `RERANK_DEFAULT=false`, `RESULT_TOPN=50`, `CACHE_TTL_SECONDS=45`.
+Also add to `.env.example`: `API_PORT=3100`, `NETWORK_CONFIG_PATH=./test/fixtures/networks`, `RERANK_BASE_URL=http://signals-search-embeddings:8081`, `RERANK_DEFAULT=false`, `RESULT_TOPN=50`, `CACHE_TTL_SECONDS=45`, `EMBEDDING_TIMEOUT_MS=5000`, `EMBEDDING_MAX_RETRIES=2`.
 
 - [ ] **Step 3: Write the failing test** for the server factory + health route:
 
@@ -1086,9 +1091,161 @@ git commit -m "feat: worker uses real network registry for vectorize fields"
 
 ---
 
+### Task 10: Embedder request timeout + bounded retry (issue #2 item 7)
+
+`OpenAiCompatibleEmbedder.embed` currently does a bare `fetch` with no timeout, so a hung TEI call blocks the request that awaits it indefinitely — both the query path (this plan) and the single-threaded ingestion loop (Plan 1). Add an `AbortController` timeout and a bounded retry with backoff. This hardens the **shared** embedder, so both processes benefit.
+
+**Files:**
+- Modify: `src/embedding/provider.ts` (`EmbedderOptions`, `embed`)
+- Modify: `src/worker/main.ts` and `src/api/main.ts` (pass `timeoutMs`/`maxRetries` from config when constructing the embedder)
+- Test: `src/embedding/provider_resilience.test.ts`
+
+- [ ] **Step 1: Write the failing test** — drive a real local HTTP server that hangs once, then succeeds:
+
+```typescript
+// src/embedding/provider_resilience.test.ts
+import { describe, it, expect, afterEach } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import { OpenAiCompatibleEmbedder } from './provider.js';
+
+let server: Server | undefined;
+afterEach(() => { server?.close(); server = undefined; });
+
+function listen(handler: Parameters<typeof createServer>[1]): Promise<string> {
+  return new Promise((resolve) => {
+    server = createServer(handler);
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server!.address();
+      if (addr && typeof addr === 'object') resolve(`http://127.0.0.1:${addr.port}`);
+    });
+  });
+}
+
+const ok = (dim: number) => JSON.stringify({ data: [{ embedding: Array.from({ length: dim }, () => 0) }] });
+
+describe('OpenAiCompatibleEmbedder resilience', () => {
+  it('aborts a hung request after timeoutMs instead of hanging forever', async () => {
+    const base = await listen(() => { /* never responds */ });
+    const embedder = new OpenAiCompatibleEmbedder({ baseUrl: base, model: 'm', dim: 4, timeoutMs: 150, maxRetries: 0 });
+    await expect(embedder.embed(['hi'])).rejects.toThrow(/timeout|abort/i);
+  });
+
+  it('retries a transient failure up to maxRetries, then succeeds', async () => {
+    let hits = 0;
+    const base = await listen((_req, res) => {
+      hits += 1;
+      if (hits === 1) { res.statusCode = 503; res.end('try later'); return; }
+      res.setHeader('content-type', 'application/json'); res.end(ok(4));
+    });
+    const embedder = new OpenAiCompatibleEmbedder({ baseUrl: base, model: 'm', dim: 4, timeoutMs: 1000, maxRetries: 2 });
+    const out = await embedder.embed(['hi']);
+    expect(hits).toBe(2);
+    expect(out).toHaveLength(1);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm vitest run src/embedding/provider_resilience.test.ts`
+Expected: FAIL — the hung-request case never rejects (or times out at the test runner level), and the transient-failure case throws on the first 503 (no retry).
+
+- [ ] **Step 3: Implement timeout + bounded retry** in `src/embedding/provider.ts`:
+
+```typescript
+export type EmbedderOptions = {
+  baseUrl: string;
+  model: string;
+  dim: number;
+  apiKey?: string;
+  timeoutMs?: number;   // default 5000
+  maxRetries?: number;  // default 2 (total attempts = maxRetries + 1)
+};
+
+export class OpenAiCompatibleEmbedder implements Embedder {
+  constructor(private readonly opts: EmbedderOptions) {}
+
+  async embed(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (this.opts.apiKey) headers['authorization'] = `Bearer ${this.opts.apiKey}`;
+    const timeoutMs = this.opts.timeoutMs ?? 5000;
+    const maxRetries = this.opts.maxRetries ?? 2;
+
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(new Error(`embedding request timeout after ${timeoutMs}ms`)), timeoutMs);
+      try {
+        const res = await fetch(`${this.opts.baseUrl}/embeddings`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ model: this.opts.model, input: texts }),
+          signal: ac.signal,
+        });
+        if (!res.ok) throw new Error(`embedding request failed: ${res.status} ${await res.text()}`);
+        const json = (await res.json()) as { data: { embedding: number[] }[] };
+        return json.data.map((d) => {
+          if (d.embedding.length !== this.opts.dim) {
+            throw new Error(`unexpected embedding dimension ${d.embedding.length}, expected ${this.opts.dim}`);
+          }
+          return l2normalize(d.embedding);
+        });
+      } catch (err) {
+        lastErr = err;
+        if (attempt < maxRetries) {
+          // linear backoff; small and bounded so the worker loop is never blocked long
+          await new Promise((r) => setTimeout(r, 100 * (attempt + 1)));
+          continue;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+}
+```
+
+(The abort reason surfaces as the thrown error's message; the `rejects.toThrow(/timeout|abort/i)` assertion matches either the custom timeout message or the native `AbortError`.)
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm vitest run src/embedding/provider_resilience.test.ts`
+Expected: PASS (both cases).
+
+- [ ] **Step 5: Pass the config knobs at both construction sites**
+
+In `src/worker/main.ts` and `src/api/main.ts`, include the new fields when building the embedder:
+
+```typescript
+const embedder = new OpenAiCompatibleEmbedder({
+  baseUrl: cfg.embedding.baseUrl,
+  model: cfg.embedding.model,
+  dim: cfg.embedding.dim,
+  apiKey: cfg.embedding.apiKey,
+  timeoutMs: cfg.embedding.timeoutMs,
+  maxRetries: cfg.embedding.maxRetries,
+});
+```
+
+- [ ] **Step 6: Typecheck + full suite**
+
+Run: `pnpm typecheck && pnpm vitest run`
+Expected: typecheck clean; all tests PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/embedding/provider.ts src/embedding/provider_resilience.test.ts src/worker/main.ts src/api/main.ts src/config.ts
+git commit -m "feat: embedder request timeout + bounded retry (closes #2 item 7)"
+```
+
+---
+
 ## Self-Review Notes (for the implementer)
 
-- **Spec coverage (Plan 2 portion):** Beckn `context`/`message` envelope ✓ (Task 2); API-key auth vs Signals `apikey` hash ✓ (Task 4); interaction-matrix scope from `actions[*].interactions[*]` + served-domain check ✓ (Tasks 3, 8); `item.id` stored-vector fast path + `textSearch` runtime embed ✓ (Task 8); filter-then-rank (live-only, structured filters, `ST_DWithin`, cosine `<=>`) ✓ (Task 5); optional cross-encoder rerank via TEI ✓ (Tasks 6, 8); short-TTL Redis result cache ✓ (Tasks 7, 8); masked `item_state` returned via the `items` join ✓ (Task 5/8); response echoes `context` + `items` + `meta` ✓ (Task 8). Resolves the Plan 1 `makeFieldsFor` seam ✓ (Task 9).
+- **Spec coverage (Plan 2 portion):** Beckn `context`/`message` envelope ✓ (Task 2); API-key auth vs Signals `apikey` hash ✓ (Task 4); interaction-matrix scope from `actions[*].interactions[*]` + served-domain check ✓ (Tasks 3, 8); `item.id` stored-vector fast path + `textSearch` runtime embed ✓ (Task 8); filter-then-rank (live-only, structured filters, `ST_DWithin`, cosine `<=>`) ✓ (Task 5); optional cross-encoder rerank via TEI ✓ (Tasks 6, 8); short-TTL Redis result cache ✓ (Tasks 7, 8); masked `item_state` returned via the `items` join ✓ (Task 5/8); response echoes `context` + `items` + `meta` ✓ (Task 8). Resolves the Plan 1 `makeFieldsFor` seam ✓ (Task 9). Hardens the shared embedder with timeout + bounded retry ✓ (Task 10, issue #2 item 7).
 - **Type consistency:** `Embedder`, `ItemSearchRepo`, `serializeItemText`, `resolveVectorizeFields`/`VectorizeField` are reused from Plan 1 unchanged; new types `SearchParams`/`SearchRow`/`FilterClause`, `NetworkRegistry`, `Caller`, `Reranker` are used consistently across Tasks 3–8.
 - **Security:** SQL filter field keys are bound to the `->>`/`->` operators as parameters (never string-interpolated), and `target` is schema-restricted to `item_state.<field>`; only live items are returned; `item_state` is the masked public state from `items`; no anonymous access (401).
 - **Interaction-matrix rule (made explicit):** when `intent.item.id` is present, the anchor item's domain is the source and `source → target` must be an allowed interaction (403 otherwise); for `textSearch`/geo-only requests with no anchor, the check is the served-domain existence (404 otherwise). This is faithful to the spec without inventing a new `context.sourceDomain` field; if product wants strict cross-domain scoping for free-text too, add an explicit source to the envelope and update the spec.
