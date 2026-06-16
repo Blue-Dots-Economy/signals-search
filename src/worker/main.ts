@@ -7,14 +7,7 @@ import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
 import { ensureConsumerGroup, readBatch, ackMessages } from '../ingest/stream_consumer.js';
 import { processEvent } from './process_event.js';
 import { runSweep } from '../ingest/sweep.js';
-import { resolveVectorizeFields, type VectorizeField } from '../config/vectorize_fields.js';
-
-// NOTE: per-(network,domain,type) vectorize-field resolution is wired to the
-// network-config loader in Plan 2/3. For now this stub returns no fields. Keep
-// the fieldsFor signature stable so the loader can drop in without changing callers.
-function makeFieldsFor(): (n: string, d: string, t: string) => VectorizeField[] {
-  return () => resolveVectorizeFields({ properties: {} }).fields;
-}
+import { loadNetworkRegistry } from '../config/network_registry.js';
 
 async function main() {
   const cfg = loadConfig();
@@ -29,7 +22,8 @@ async function main() {
   const repo = new ItemSearchRepo(sql, cfg.embedding.dim);
   const embedder = new OpenAiCompatibleEmbedder(cfg.embedding);
   const modelVersion = `${cfg.embedding.model}@${cfg.embedding.dim}`;
-  const fieldsFor = makeFieldsFor();
+  const registry = await loadNetworkRegistry(cfg.networkConfigPath);
+  const fieldsFor = (n: string, d: string, t: string) => registry.vectorizeFields(n, d, t);
 
   await runMigrations(cfg.databaseUrl);
   await ensureConsumerGroup(redis, cfg.ingest.stream, cfg.ingest.consumerGroup);
