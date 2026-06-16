@@ -174,6 +174,8 @@ Indexes: HNSW on `embedding` (`vector_cosine_ops`); GiST on `geo`; partition-loc
 ### Extensions to enable on the shared PG
 `CREATE EXTENSION vector; CREATE EXTENSION postgis;` (in addition to existing `pgcrypto`, `cube`, `earthdistance`).
 
+**Managed-Postgres note (RDS / Aurora):** all five extensions are first-class on AWS RDS and Aurora PostgreSQL (pgvector 0.8.x with HNSW + parallel build; PostGIS 3.6.x), so the planned move from self-hosted-in-EKS to managed PG does **not** change the architecture. What changes is *how* extensions are enabled — there is no Bitnami `initdb`/superuser hook: they must be allowlisted in the instance **parameter group** and created via an idempotent migrate-step run as the master / `rds_superuser` role. This reinforces Signals-DPG#177 (extensions as their own concern, run by argument). Connectivity shifts from an in-cluster ClusterIP to an RDS endpoint + Secrets Manager + security-group egress — absorbed by the configurable `POSTGRES_URL`; consider **RDS Proxy / pgbouncer** for pooling now that more services share the instance. Bonus: Aurora read replicas make the >1M-row escape hatch (offload search ANN to a replica) trivial; pgvector 0.8's filtered-query planner also helps our filter-then-rank.
+
 ---
 
 ## 5. Vectorization Config (`network.json`)
@@ -269,8 +271,9 @@ Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the i
 ---
 
 ## 12. Open Questions / To Confirm on Review
-- Whether result cache TTL / rate-limit thresholds need per-caller (org) tuning.
-- TEI deployment sizing (CPU vs GPU) per environment, and whether the reranker is co-located in the same TEI pod or a separate one.
+- **Managed Postgres migration:** the team is moving the shared PG from self-hosted-in-EKS to AWS managed (RDS or Aurora PostgreSQL). pgvector + PostGIS are fully supported there, so the design is unaffected — confirm **RDS vs Aurora**, pin an engine version shipping pgvector ≥0.7 (HNSW) + PostGIS, and move extension creation off the initdb hook (see §4 managed-Postgres note).
+
+**Resolved:** cache/rate-limit tuning is global, **not per-org**. TEI runs **CPU**, with embeddings + reranker **co-located in one pod**.
 
 ---
 
@@ -289,7 +292,7 @@ The work spans **three repos** (a fourth is deferred). Decisions:
 
 | Repo | Owns | Changes for this work |
 |---|---|---|
-| **bluedots-automation** | EKS + Helm + OpenTofu; shared Postgres bootstrap (`common-services/.../00-bootstrap.sh`, superuser), Redis, secrets/env, deploy order, service-user/apikey provisioning | Add `CREATE EXTENSION vector; CREATE EXTENSION postgis;` to bootstrap; new `search` Helm subchart (worker + API deploy, HPA, ingress); **TEI embedding/rerank service** (BGE-M3 + bge-reranker-v2-m3, CPU/GPU); secrets (`EMBEDDING_BASE_URL`/model, DB/Redis URLs); wire into `install.sh` deploy order after `signals` |
+| **bluedots-automation** | EKS + Helm + OpenTofu; shared Postgres bootstrap, Redis, secrets/env, deploy order, service-user/apikey provisioning | Enable `vector` + `postgis` — on self-hosted PG via `00-bootstrap.sh`; on RDS/Aurora via parameter-group allowlist + an `rds_superuser` migrate-step (no initdb hook); new `search` Helm subchart (worker + API, HPA, ingress); **TEI embedding/rerank service** (BGE-M3 + bge-reranker-v2-m3, **CPU, both in one pod**); secrets (`EMBEDDING_BASE_URL`/model, DB/Redis URLs, RDS endpoint); wire into `install.sh` deploy order after `signals` |
 | **Signals-DPG** | Authoritative `schema.sql` DDL for `dpg` DB; item write path (`ioredis` client + best-effort `.catch(warn)` precedent); dev example schemas | Add `item_search` table + extensions to `schema.sql` source + re-bundle; add `vectorize` markers to `examples/schemas/`; add best-effort enqueue after create/update/delete |
 | **signals-search** | The service | `item_search` read-model; embedding provider; ingestion worker + reconciliation/backfill sweep; `POST /v1/search` (auth, interaction-matrix validation, filter-then-rank, Redis cache) |
 | *bluedots-allusecase-schemas (deferred)* | *Canonical prod network.json* | *Receives markers + schemas later — Signals-DPG#176* |
