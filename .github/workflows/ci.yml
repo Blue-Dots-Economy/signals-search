@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      # Pre-build the Postgres test image so Testcontainers' fromDockerfile build
+      # hits the buildkit cache instead of a cold build (which can exceed vitest's
+      # hookTimeout on a cache miss). imresamu/postgis is the multi-arch base; on
+      # the amd64 runner this also resolves/pulls the amd64 manifest up front.
+      - name: Pre-build test Postgres image (pgvector + postgis)
+        run: docker build -t signals-search-pg-test test/docker -f test/docker/Dockerfile.postgres
+
+      - name: Test
+        run: pnpm test

@@ -15,7 +15,12 @@ export async function processEvent(args: {
 }): Promise<void> {
   const { event, sql, repo, embedder, fieldsFor, modelVersion } = args;
   if (event.op === 'delete') {
-    await repo.delete(event.item_id);
+    await repo.delete({
+      item_network: event.item_network,
+      item_domain: event.item_domain,
+      item_type: event.item_type,
+      item_id: event.item_id,
+    });
     return;
   }
   const rows = await sql<SourceItem[]>`

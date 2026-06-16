@@ -25,7 +25,13 @@ export async function indexItem(args: {
   const { item, fields, embedder, repo, modelVersion } = args;
   const text = serializeItemText(item.item_state, fields);
   const hash = contentHash(`${modelVersion}\n${text}`);
-  if ((await repo.getContentHash(item.item_id)) === hash) {
+  const key = {
+    item_network: item.item_network,
+    item_domain: item.item_domain,
+    item_type: item.item_type,
+    item_id: item.item_id,
+  };
+  if ((await repo.getContentHash(key)) === hash) {
     return { action: 'skipped' };
   }
   const [embedding] = await embedder.embed([text]);

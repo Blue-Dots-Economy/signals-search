@@ -6,11 +6,17 @@ export const ITEM_SEARCH_VECTOR_DIM = 1024;
 
 export type ItemLocation = { lat: number; lng: number; label?: string };
 
-export type UpsertInput = {
+/** The full composite primary key of item_search.
+ *  item_id alone is a globally-unique UUID today, but reads/deletes key on the
+ *  whole PK for index usage and consistency with the table definition. */
+export type ItemKey = {
   item_network: string;
   item_domain: string;
   item_type: string;
   item_id: string;
+};
+
+export type UpsertInput = ItemKey & {
   embedding: number[];
   locations: ItemLocation[];
   lifecycleStatus: string;
@@ -55,13 +61,19 @@ export class ItemSearchRepo {
         indexed_at = now()`;
   }
 
-  async getContentHash(item_id: string): Promise<string | null> {
+  async getContentHash(key: ItemKey): Promise<string | null> {
     const rows = await this.sql<{ content_hash: string | null }[]>`
-      SELECT content_hash FROM item_search WHERE item_id = ${item_id} LIMIT 1`;
+      SELECT content_hash FROM item_search
+      WHERE item_network = ${key.item_network} AND item_domain = ${key.item_domain}
+        AND item_type = ${key.item_type} AND item_id = ${key.item_id}
+      LIMIT 1`;
     return rows[0]?.content_hash ?? null;
   }
 
-  async delete(item_id: string): Promise<void> {
-    await this.sql`DELETE FROM item_search WHERE item_id = ${item_id}`;
+  async delete(key: ItemKey): Promise<void> {
+    await this.sql`
+      DELETE FROM item_search
+      WHERE item_network = ${key.item_network} AND item_domain = ${key.item_domain}
+        AND item_type = ${key.item_type} AND item_id = ${key.item_id}`;
   }
 }

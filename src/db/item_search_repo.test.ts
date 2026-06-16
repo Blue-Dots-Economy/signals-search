@@ -51,3 +51,24 @@ describe('ItemSearchRepo.upsert', () => {
     expect(rows[0].content_hash).toBe('def');
   });
 });
+
+describe('ItemSearchRepo composite-key reads/deletes', () => {
+  it('getContentHash matches on the full composite key', async () => {
+    // not-yet-present key returns null
+    const absent = { ...key, item_id: '00000000-0000-4000-8000-000000000000' };
+    expect(await repo.getContentHash(absent)).toBeNull();
+    // present key returns its current hash (set to 'def' by the upsert test above)
+    expect(await repo.getContentHash(key)).toBe('def');
+    // same item_id but a different composite part must NOT match
+    expect(await repo.getContentHash({ ...key, item_domain: 'seeker' })).toBeNull();
+  });
+
+  it('delete removes only the row with the matching composite key', async () => {
+    // a different composite key (same item_id, different type) is left untouched
+    await repo.delete({ ...key, item_type: 'profile_2.0' });
+    expect(await repo.getContentHash(key)).toBe('def');
+    // deleting the exact composite key removes it
+    await repo.delete(key);
+    expect(await repo.getContentHash(key)).toBeNull();
+  });
+});
