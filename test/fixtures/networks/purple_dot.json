@@ -1,0 +1,24 @@
+{
+  "id": "purple_dot",
+  "display_name": "Purple Dot",
+  "domains": [
+    { "id": "seeker", "item_schemas": { "profile_1.0": { "properties": { "needs": { "type": "string", "vectorize": true } } } } },
+    {
+      "id": "provider",
+      "item_schemas": {
+        "profile_1.0": {
+          "properties": {
+            "service_details": { "type": "string", "vectorize": true, "vector_weight": 2 },
+            "services_offered": { "type": "array", "vectorize": true },
+            "provider_category": { "type": "string" },
+            "contact_phone": { "type": "string", "private": true }
+          }
+        }
+      }
+    }
+  ],
+  "actions": {
+    "apply": { "interactions": [ { "from_network": "purple_dot", "from_domain": "seeker", "to_network": "purple_dot", "to_domain": "provider" } ] },
+    "refer": { "interactions": [ { "from_network": "purple_dot", "from_domain": "seeker", "to_network": "blue_dot", "to_domain": "aggregator" } ] }
+  }
+}
