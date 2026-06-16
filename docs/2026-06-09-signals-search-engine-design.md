@@ -72,26 +72,79 @@ One `POST /v1/search` composes structured + geo + vector. **Fusion = filter-then
 
 **Rejected:** separate similarity/geo endpoints — forces client-side orchestration + a second round-trip for the common "relevant near me" case and prevents joint ranking.
 
-### D6 — Query API parameters
+### D6 — Query API contract (sync, Beckn-aligned)
 
-```
-POST /v1/search        (auth required — see D-Auth)
+`POST /v1/search` (auth required — see D-Auth). The envelope mirrors the Beckn `discover` shape — `context` + `message` — but is **synchronous** (no `action`/`on_discover` callback). `context` carries routing (network/domain/itemType); `message.intent` carries the matching criteria; `message.pagination` carries the result window.
+
+**Request**
+```jsonc
 {
-  "target":  { "network": "...", "domain": "...", "type": "..." },   // validated vs network.json interaction matrix
-  "anchor":  { "item_id": "..." } | { "text": "free text" },          // optional; drives the query vector
-  "filters": { ...item_state containment / structured... },           // optional
-  "near":    { "lat": .., "lng": .., "radius_m": .. },                 // optional
-  "metric":  "cosine",                                                 // default; see note
-  "limit":   20, "offset": 0
+  "context": {
+    "version": "1.0.0",
+    "messageId": "bb9f86db-…",          // uuid (echoed in response)
+    "timestamp": "2026-06-09T12:00:00Z",
+    "networkId": "purple_dot",           // → item_network (target)
+    "domain": "provider",                 // → item_domain (target)
+    "itemType": "profile_1.0"             // → item_type / schema (target)
+  },
+  "message": {
+    "intent": {
+      "textSearch": "speech therapy",     // free-text → embedded at read
+      "item": { "id": "<item_id>" },       // anchor: items relevant to this item ("me"/X)
+      "spatial": [                          // geo hard-filter (s_dwithin → PostGIS ST_DWithin)
+        { "op": "s_dwithin",
+          "geometry": { "type": "Point", "coordinates": [77.6104, 12.9153] },
+          "distanceMeters": 5000 }
+      ],
+      "filters": [                          // structured hard-filters on public item_state
+        { "op": "eq", "target": "item_state.provider_category", "value": "NGO / Trust" },
+        { "op": "in", "target": "item_state.disabilities_served", "value": ["Low Vision"] }
+      ]
+    },
+    "pagination": { "limit": 20, "offset": 0 }
+  }
 }
 ```
 
-- `anchor.item_id` → reuse the item's **stored** vector → **no embedding call** → pure in-DB (fastest; "relevant to me").
-- `anchor.text` → embed at runtime (one call, cached by text hash; "relevant to X").
-- no `anchor` → pure geo/structured, ranked by distance ("matches near me").
-- `target` validated against the **interaction matrix** in `network.json`: a caller may only search domains its source domain is allowed to interact with; otherwise reject. Always cross-domain per use-case definition.
+**Response** (sync; same `context` echoed, `catalogs` → `items`)
+```jsonc
+{
+  "context": {
+    "version": "1.0.0",
+    "messageId": "bb9f86db-…",
+    "timestamp": "2026-06-09T12:00:05Z",
+    "networkId": "purple_dot",
+    "domain": "provider",
+    "itemType": "profile_1.0"
+  },
+  "message": {
+    "items": [
+      {
+        "item_network": "purple_dot",
+        "item_domain": "provider",
+        "item_type": "profile_1.0",
+        "item_id": "5d2bcec7-…",
+        "item_state": { "…masked public state…": "" },
+        "item_locations": [ { "lat": 12.9352, "lng": 77.6245, "label": "Bengaluru" } ],
+        "score": 0.87,            // similarity; present when textSearch/item anchor given
+        "distanceMeters": 1240    // nearest matching location; present when spatial given
+      }
+    ],
+    "meta": { "total": 42, "limit": 20, "offset": 0 }
+  }
+}
+```
 
-**Metric selection:** pgvector supports cosine `<=>`, L2 `<->`, inner-product `<#>`, but each fast metric needs its own HNSW opclass index. **V1 ships cosine only** (vectors L2-normalized at write; cosine ≡ inner-product). The `metric` param is reserved in the schema for future metrics.
+**Intent semantics** (all keys optional, composable):
+- `intent.item.id` → reuse the item's **stored** vector → **no embedding call** → pure in-DB (fastest; "relevant to me").
+- `intent.textSearch` → embed at runtime (one call, cached by text hash; "relevant to X").
+- neither `item` nor `textSearch` → pure geo/structured, ranked by distance ("matches near me").
+- `intent.spatial[]` → geo hard-filter; `op: "s_dwithin"` maps to PostGIS `ST_DWithin` against `item_locations`. (`targets` JSONPath from Beckn is dropped in V1 — applied server-side to item geo.)
+- `intent.filters[]` → structured hard-filters, each `{ op, target, value }`; `op` ∈ `eq | neq | in | contains | gt | gte | lt | lte`; `target` is a path into **public** `item_state` (masking rules apply). `eq`/`in` compile to JSONB containment (`@>`).
+- `context` (networkId/domain/itemType) is the search **target**, validated against the **interaction matrix** in `network.json`: a caller may only search domains its source is allowed to interact with; otherwise reject. Always cross-domain per use-case definition.
+- `message.pagination` = `{ limit (1–100, default 20), offset (default 0) }`, mirrored by response `message.meta`.
+
+**Ranking metric:** pgvector supports cosine `<=>`, L2 `<->`, inner-product `<#>`, but each fast metric needs its own HNSW opclass index. **V1 ships cosine only** (vectors L2-normalized at write; cosine ≡ inner-product). A future `metric` selector can be added under `intent` if needed.
 
 ### D7 — Reuse jobstack patterns, not code
 Reuse (ported to TS): the embedding-provider abstraction; config-driven attribute selection + weighting; deterministic text serializer (`profile_text_for_embedding` equivalent); Redis embed-cache by text hash; optional rules re-ranker (Jaro-Winkler / range penalties) as a post-vector stage.
@@ -147,12 +200,12 @@ Per item-type schema property, a new optional marker:
 ## 7. Query Flow (read path)
 
 1. Authenticate `x-api-key` (Signals `apikey`); resolve caller org.
-2. Validate `target` against `network.json` interaction matrix.
-3. Resolve query vector: `anchor.item_id` → stored vector (no embed call); `anchor.text` → embed (cached); none → skip vector ranking.
-4. Build SQL: `WHERE lifecycle_status='live'` + partition prune on target network/domain + structured filters + `ST_DWithin(geo, $point, $radius_m)` if `near`.
-5. Rank: if vector present, `ORDER BY embedding <=> $qvec` (HNSW); else `ORDER BY ST_Distance(...)`. Optional distance tiebreak/boost.
-6. `LIMIT/OFFSET`; join `items` for masked `item_state`; return.
-7. Cache the response in Redis (short TTL, ~30–60 s, keyed by normalized request incl. query-embedding hash).
+2. Validate `context` (networkId/domain/itemType) against the `network.json` interaction matrix.
+3. Resolve query vector: `intent.item.id` → stored vector (no embed call); `intent.textSearch` → embed (cached); neither → skip vector ranking.
+4. Build SQL: `WHERE lifecycle_status='live'` + partition prune on target network/domain + `intent.filters[]` + `ST_DWithin(geo, $point, $distanceMeters)` for each `intent.spatial[]` clause.
+5. Rank: if a vector is present, `ORDER BY embedding <=> $qvec` (HNSW); else `ORDER BY ST_Distance(...)`. Optional distance tiebreak/boost.
+6. Apply `message.pagination` (`limit`/`offset`); join `items` for masked `item_state`; emit `message.items` + `message.meta`, echoing `context`.
+7. Cache the response in Redis (short TTL, ~30–60 s, keyed by the normalized request incl. query-embedding hash).
 
 ---
 
@@ -177,7 +230,7 @@ Per item-type schema property, a new optional marker:
 
 New repo **`signals-search`** (TS/Fastify/Drizzle), two processes:
 - **Ingestion worker:** drains the Redis queue Signals publishes on item write/delete + reconciliation sweep; serializes → embeds → upserts `item_search`.
-- **API service:** `POST /v1/search` (auth, interaction-matrix validation, filter-then-rank, Redis cache).
+- **API service:** `POST /v1/search` — sync Beckn-aligned `context`/`message` envelope (auth, interaction-matrix validation, filter-then-rank, Redis cache).
 
 Changes to **Signals-DPG** (the only core changes): best-effort enqueue in the item write/delete path; `vectorize` markers in `network.json` schemas; enable `vector` + `postgis` extensions; `item_search` migration.
 

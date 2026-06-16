@@ -98,19 +98,19 @@ sequenceDiagram
   participant V as item_search (pgvector+PostGIS)
   participant IT as items
 
-  C->>A: POST /v1/search (x-api-key, target, anchor, near, filters)
+  C->>A: POST /v1/search (x-api-key)<br/>context{networkId,domain,itemType} + message.intent{textSearch,item,spatial,filters} + pagination
   A->>AK: verify key → caller org
-  A->>NJ: validate target vs interaction matrix
-  alt anchor = item_id
+  A->>NJ: validate context (network/domain/itemType) vs interaction matrix
+  alt intent.item.id
     A->>V: read stored vector (NO embedding call → fast path)
-  else anchor = text
+  else intent.textSearch
     A->>E: embed(query text) [Redis-cached by text hash]
     E-->>A: query vector
   end
-  A->>V: WHERE live + filters + ST_DWithin(geo,$pt,$r)<br/>ORDER BY embedding <=> $qvec LIMIT k
+  A->>V: WHERE live + filters[] + ST_DWithin(geo,$pt,$distanceMeters)<br/>ORDER BY embedding <=> $qvec LIMIT/OFFSET (pagination)
   V-->>A: ranked item keys + nearest distance
   A->>IT: join → masked item_state
-  A-->>C: ranked results (response cached ~30–60s)
+  A-->>C: context + message.items[] + meta (response cached ~30–60s)
 ```
 
 ---
