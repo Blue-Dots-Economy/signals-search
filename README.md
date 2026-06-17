@@ -4,7 +4,7 @@ Search & discovery service for **Signals-DPG**. Provides authenticated, ranked-o
 
 This is **V1** — a deliberate stepping stone toward the future Beckn/NFH discovery service. It reads the existing **Signals-DPG database only** (single instance, no federation) and replaces the legacy Elasticsearch-based discovery design with Postgres-native search on the shared Postgres instance.
 
-> Status: ingestion pipeline implemented (Plan 1); query API is Plan 2.
+> Status (V1, in the `feature` integration branch): ingestion worker (Plan 1), query API `POST /v1/search` (Plan 2), and worker hardening for cutover (Plan 5) are implemented and tested. Remaining for production cutover: the Signals-DPG enqueue + authoritative DDL (Plan 3) and the deploy/TEI Helm wiring (Plan 4).
 
 ## What it answers
 
@@ -25,7 +25,8 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 
 ## Stack
 
-- **TypeScript + Fastify + Drizzle ORM**
+- **TypeScript (ESM, NodeNext) + Fastify + Zod**
+- **[postgres.js](https://github.com/porsager/postgres)** for DB access (parameterized `sql` templates — no ORM layer)
 - **PostgreSQL** with `pgvector` (similarity) and `postgis` (geospatial), on the shared Signals-DPG database
 - **Redis** (shared) — ingestion queue + result/embedding cache
 - **Embedding & reranking via HuggingFace TEI** (in-cluster, OpenAI-compatible) — OSS default **BGE-M3** (Apache-2.0, 1024-dim) for embeddings + optional **bge-reranker-v2-m3** cross-encoder; hosted APIs (Gemini/OpenAI/Voyage) opt-in via config base_url. Output dimension ≤ 2000 for HNSW indexing
@@ -45,10 +46,11 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 
 ## Design docs
 
-- Design spec: `2026-06-09-signals-search-engine-design.md`
-- Tech architecture (diagrams): `2026-06-09-signals-search-engine-architecture.md`
+In `docs/`:
 
-(These currently live in the `blue-dots-economy` workspace under `docs/superpowers/specs/` and will move here as the service is scaffolded.)
+- Design spec: `docs/2026-06-09-signals-search-engine-design.md`
+- Tech architecture (diagrams): `docs/2026-06-09-signals-search-engine-architecture.md`
+- Implementation plans: `docs/superpowers/plans/` (Plan 1 ingestion, Plan 2 query API, Plan 5 worker hardening; Plans 3 & 4 for Signals-DPG and automation live in those repos)
 
 ## Development
 
@@ -57,10 +59,11 @@ pnpm install
 pnpm test        # vitest + testcontainers (Docker required; first run builds a pgvector+postgis image)
 pnpm typecheck
 pnpm build       # tsc -> dist/ (+ copies migration SQL)
-pnpm worker      # run the ingestion worker (needs DATABASE_URL, REDIS_URL, EMBEDDING_BASE_URL)
+pnpm worker      # ingestion worker (DATABASE_URL, REDIS_URL, EMBEDDING_BASE_URL, NETWORK_CONFIG_PATH)
+pnpm api         # query API on API_PORT (same env + serves POST /v1/search)
 ```
 
-Tests use Testcontainers; ensure Docker is running. The Postgres test image (`test/docker/Dockerfile.postgres`) bundles pgvector + PostGIS.
+Tests use Testcontainers; ensure Docker is running. The Postgres test image (`test/docker/Dockerfile.postgres`) bundles pgvector + PostGIS. See `.env.example` for all config. Note `RUN_MIGRATIONS` defaults to **off** — the worker assumes the `item_search` schema already exists (owned by Signals-DPG in prod) and fails fast if not; set `RUN_MIGRATIONS=true` for local/dev to apply the bundled migration.
 
 ## License
 
