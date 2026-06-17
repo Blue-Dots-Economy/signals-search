@@ -10,6 +10,7 @@ const EnvSchema = z.object({
   INGEST_STREAM: z.string().default('signals:item-events'),
   INGEST_CONSUMER_GROUP: z.string().default('signals-search'),
   INGEST_CONSUMER_NAME: z.string().default('worker-1'),
+  PEL_MIN_IDLE_MS: z.coerce.number().int().nonnegative().default(60_000),
   SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(200),
   API_PORT: z.coerce.number().int().positive().default(3100),
@@ -29,7 +30,7 @@ export type Config = {
   redisUrl: string;
   runMigrations: boolean;
   embedding: { baseUrl: string; model: string; dim: number; apiKey?: string; timeoutMs: number; maxRetries: number };
-  ingest: { stream: string; consumerGroup: string; consumerName: string };
+  ingest: { stream: string; consumerGroup: string; consumerName: string; pelMinIdleMs: number };
   sweep: { intervalMs: number; batchSize: number };
   api: { port: number };
   networkConfigPath: string;
@@ -43,7 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     databaseUrl: e.DATABASE_URL,
     redisUrl: e.REDIS_URL,
     embedding: { baseUrl: e.EMBEDDING_BASE_URL, model: e.EMBEDDING_MODEL, dim: e.EMBEDDING_DIM, apiKey: e.EMBEDDING_API_KEY, timeoutMs: e.EMBEDDING_TIMEOUT_MS, maxRetries: e.EMBEDDING_MAX_RETRIES },
-    ingest: { stream: e.INGEST_STREAM, consumerGroup: e.INGEST_CONSUMER_GROUP, consumerName: e.INGEST_CONSUMER_NAME },
+    ingest: { stream: e.INGEST_STREAM, consumerGroup: e.INGEST_CONSUMER_GROUP, consumerName: e.INGEST_CONSUMER_NAME, pelMinIdleMs: e.PEL_MIN_IDLE_MS },
     sweep: { intervalMs: e.SWEEP_INTERVAL_MS, batchSize: e.SWEEP_BATCH_SIZE },
     api: { port: e.API_PORT },
     networkConfigPath: e.NETWORK_CONFIG_PATH,

@@ -4,7 +4,7 @@ import { loadConfig } from '../config.js';
 import { runMigrations, assertSchemaReady } from '../db/migrate.js';
 import { ItemSearchRepo, ITEM_SEARCH_VECTOR_DIM } from '../db/item_search_repo.js';
 import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
-import { ensureConsumerGroup, readBatch, ackMessages } from '../ingest/stream_consumer.js';
+import { ensureConsumerGroup, readBatch, ackMessages, reclaimPending } from '../ingest/stream_consumer.js';
 import { processEvent } from './process_event.js';
 import { runSweep, sweepOrphans } from '../ingest/sweep.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
@@ -45,8 +45,11 @@ async function main() {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const batch = await readBatch(redis, cfg.ingest.stream, cfg.ingest.consumerGroup, cfg.ingest.consumerName, 50, 5000);
-    for (const msg of batch) {
+    const reclaimed = await reclaimPending(
+      redis, cfg.ingest.stream, cfg.ingest.consumerGroup, cfg.ingest.consumerName, cfg.ingest.pelMinIdleMs, 50,
+    ).catch((err) => { console.error('reclaimPending failed', err); return []; });
+    const fresh = await readBatch(redis, cfg.ingest.stream, cfg.ingest.consumerGroup, cfg.ingest.consumerName, 50, 5000);
+    for (const msg of [...reclaimed, ...fresh]) {
       try {
         await processEvent({ event: msg.event, sql, repo, embedder, fieldsFor, modelVersion });
         await ackMessages(redis, cfg.ingest.stream, cfg.ingest.consumerGroup, [msg.id]);
