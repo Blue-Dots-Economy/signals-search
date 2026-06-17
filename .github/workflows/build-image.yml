@@ -27,7 +27,7 @@ jobs:
         with:
           images: ghcr.io/blue-dots-economy/signals-search
           tags: |
-            type=raw,value=develop,enable={{is_default_branch}}
+            type=raw,value=develop
             type=sha
 
       - uses: docker/build-push-action@v6
