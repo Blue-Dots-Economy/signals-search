@@ -54,23 +54,34 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
       [queryVector] = await deps.embedder.embed([message.intent.textSearch]);
     }
 
+    // Rerank only applies to free-text search (the cross-encoder scores query-vs-doc)
+    // and only when enabled with a configured endpoint. The SAME predicate must gate
+    // both the stage-1 over-fetch and the slice-back — otherwise we over-fetch without
+    // re-paginating (e.g. an anchor search with rerank on would return up to topN rows
+    // and ignore the requested offset). See PR #7 review.
+    const willRerank = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
     const topN = Math.max(pagination.limit, deps.rerank.topN);
     const { rows, total } = await searchItems(deps.sql, {
       item_network: networkId, item_domain: domain, item_type: itemType,
       queryVector,
       spatial: spatial ? { lat: spatial.geometry.coordinates[1], lng: spatial.geometry.coordinates[0], distanceMeters: spatial.distanceMeters } : undefined,
       filters: (message.intent.filters ?? []) as FilterClause[],
-      limit: queryVector && deps.rerank.defaultOn ? topN : pagination.limit,
-      offset: queryVector && deps.rerank.defaultOn ? 0 : pagination.offset,
+      limit: willRerank ? topN : pagination.limit,
+      offset: willRerank ? 0 : pagination.offset,
     });
 
     let ordered = rows;
-    if (deps.rerank.defaultOn && deps.rerank.baseUrl && message.intent.textSearch && rows.length > 1) {
-      const fields = deps.registry.vectorizeFields(networkId, domain, itemType);
-      const texts = rows.map((r) => serializeItemText(r.item_state, fields));
-      const order = await new TeiReranker({ baseUrl: deps.rerank.baseUrl, model: deps.rerank.model })
-        .rerank(message.intent.textSearch, texts);
-      ordered = order.map((i) => rows[i]).slice(pagination.offset, pagination.offset + pagination.limit);
+    if (willRerank) {
+      if (rows.length > 1 && message.intent.textSearch && deps.rerank.baseUrl) {
+        const fields = deps.registry.vectorizeFields(networkId, domain, itemType);
+        const texts = rows.map((r) => serializeItemText(r.item_state, fields));
+        const order = await new TeiReranker({ baseUrl: deps.rerank.baseUrl, model: deps.rerank.model })
+          .rerank(message.intent.textSearch, texts);
+        ordered = order.map((i) => rows[i]);
+      }
+      // We over-fetched from offset 0; apply the requested page now. This also yields
+      // an empty page when offset >= the over-fetched window, which is correct.
+      ordered = ordered.slice(pagination.offset, pagination.offset + pagination.limit);
     }
 
     const response = {
