@@ -12,14 +12,27 @@ const EnvSchema = z.object({
   INGEST_CONSUMER_NAME: z.string().default('worker-1'),
   SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(200),
+  API_PORT: z.coerce.number().int().positive().default(3100),
+  NETWORK_CONFIG_PATH: z.string().min(1),
+  RERANK_BASE_URL: z.string().url().optional(),
+  RERANK_MODEL: z.string().default('BAAI/bge-reranker-v2-m3'),
+  RERANK_DEFAULT: z.coerce.boolean().default(false),
+  RESULT_TOPN: z.coerce.number().int().positive().default(50),
+  CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(45),
+  EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+  EMBEDDING_MAX_RETRIES: z.coerce.number().int().nonnegative().default(2),
 });
 
 export type Config = {
   databaseUrl: string;
   redisUrl: string;
-  embedding: { baseUrl: string; model: string; dim: number; apiKey?: string };
+  embedding: { baseUrl: string; model: string; dim: number; apiKey?: string; timeoutMs: number; maxRetries: number };
   ingest: { stream: string; consumerGroup: string; consumerName: string };
   sweep: { intervalMs: number; batchSize: number };
+  api: { port: number };
+  networkConfigPath: string;
+  rerank: { baseUrl?: string; model: string; defaultOn: boolean; topN: number };
+  cache: { ttlSeconds: number };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): Config {
@@ -27,8 +40,12 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
   return {
     databaseUrl: e.DATABASE_URL,
     redisUrl: e.REDIS_URL,
-    embedding: { baseUrl: e.EMBEDDING_BASE_URL, model: e.EMBEDDING_MODEL, dim: e.EMBEDDING_DIM, apiKey: e.EMBEDDING_API_KEY },
+    embedding: { baseUrl: e.EMBEDDING_BASE_URL, model: e.EMBEDDING_MODEL, dim: e.EMBEDDING_DIM, apiKey: e.EMBEDDING_API_KEY, timeoutMs: e.EMBEDDING_TIMEOUT_MS, maxRetries: e.EMBEDDING_MAX_RETRIES },
     ingest: { stream: e.INGEST_STREAM, consumerGroup: e.INGEST_CONSUMER_GROUP, consumerName: e.INGEST_CONSUMER_NAME },
     sweep: { intervalMs: e.SWEEP_INTERVAL_MS, batchSize: e.SWEEP_BATCH_SIZE },
+    api: { port: e.API_PORT },
+    networkConfigPath: e.NETWORK_CONFIG_PATH,
+    rerank: { baseUrl: e.RERANK_BASE_URL, model: e.RERANK_MODEL, defaultOn: e.RERANK_DEFAULT, topN: e.RESULT_TOPN },
+    cache: { ttlSeconds: e.CACHE_TTL_SECONDS },
   };
 }

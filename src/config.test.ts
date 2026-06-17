@@ -8,6 +8,7 @@ describe('loadConfig', () => {
     EMBEDDING_BASE_URL: 'http://tei:8080/v1',
     EMBEDDING_MODEL: 'BAAI/bge-m3',
     EMBEDDING_DIM: '1024',
+    NETWORK_CONFIG_PATH: './test/fixtures/networks',
   };
 
   it('parses a valid environment with defaults', () => {
