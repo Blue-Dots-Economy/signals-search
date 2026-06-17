@@ -8,6 +8,7 @@ import { ensureConsumerGroup, readBatch, ackMessages, reclaimPending } from '../
 import { processEvent } from './process_event.js';
 import { runSweep, sweepOrphans } from '../ingest/sweep.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
+import { makeGuarded } from './guarded.js';
 
 async function main() {
   const cfg = loadConfig();
@@ -41,7 +42,8 @@ async function main() {
     }
   };
   await sweep();
-  setInterval(sweep, cfg.sweep.intervalMs);
+  const guardedSweep = makeGuarded(sweep);
+  setInterval(guardedSweep, cfg.sweep.intervalMs);
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
