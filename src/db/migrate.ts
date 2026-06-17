@@ -17,3 +17,19 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
     await sql.end();
   }
 }
+
+export async function assertSchemaReady(databaseUrl: string): Promise<void> {
+  const sql = postgres(databaseUrl, { max: 1 });
+  try {
+    const [{ ready }] = await sql<{ ready: boolean }[]>`
+      SELECT (to_regclass('public.item_search') IS NOT NULL) AS ready`;
+    if (!ready) {
+      throw new Error(
+        'item_search not found. In production Signals-DPG owns the search DDL (schema.sql); ' +
+        'apply the search migration there, or set RUN_MIGRATIONS=true for local/dev.',
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}

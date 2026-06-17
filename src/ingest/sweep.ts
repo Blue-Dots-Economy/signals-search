@@ -30,3 +30,15 @@ export async function runSweep(args: {
   }
   return count;
 }
+
+/** Remove item_search rows whose items row no longer exists (missed deletes,
+ *  no FK/ON DELETE). Returns the number of rows deleted. */
+export async function sweepOrphans(sql: Sql): Promise<number> {
+  const res = await sql`
+    DELETE FROM item_search s
+    WHERE NOT EXISTS (
+      SELECT 1 FROM items i
+      WHERE i.item_network = s.item_network AND i.item_domain = s.item_domain
+        AND i.item_type = s.item_type AND i.item_id = s.item_id)`;
+  return res.count;
+}

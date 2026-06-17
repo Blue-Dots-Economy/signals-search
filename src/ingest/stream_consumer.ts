@@ -46,3 +46,20 @@ export async function readBatch(
 export async function ackMessages(redis: Redis, stream: string, group: string, ids: string[]): Promise<void> {
   if (ids.length) await redis.xack(stream, group, ...ids);
 }
+
+export async function reclaimPending(
+  redis: Redis, stream: string, group: string, consumer: string, minIdleMs: number, count: number,
+): Promise<StreamMessage[]> {
+  // XAUTOCLAIM <key> <group> <consumer> <min-idle-time> <start> COUNT <count>
+  // Returns [nextCursor, entries, deletedIds]; entries is [[id, fields[] | null], ...].
+  const res = (await redis.xautoclaim(
+    stream, group, consumer, minIdleMs, '0-0', 'COUNT', count,
+  )) as [string, [string, string[] | null][], string[]];
+  const entries = res?.[1] ?? [];
+  const out: StreamMessage[] = [];
+  for (const [id, fields] of entries) {
+    if (!fields) continue; // tombstoned (deleted from the stream) — skip
+    out.push({ id, event: fieldsToEvent(fields) });
+  }
+  return out;
+}
