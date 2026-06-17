@@ -1,7 +1,7 @@
 import postgres from 'postgres';
 import { Redis } from 'ioredis';
 import { loadConfig } from '../config.js';
-import { runMigrations } from '../db/migrate.js';
+import { runMigrations, assertSchemaReady } from '../db/migrate.js';
 import { ItemSearchRepo, ITEM_SEARCH_VECTOR_DIM } from '../db/item_search_repo.js';
 import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
 import { ensureConsumerGroup, readBatch, ackMessages } from '../ingest/stream_consumer.js';
@@ -25,7 +25,11 @@ async function main() {
   const registry = await loadNetworkRegistry(cfg.networkConfigPath);
   const fieldsFor = (n: string, d: string, t: string) => registry.vectorizeFields(n, d, t);
 
-  await runMigrations(cfg.databaseUrl);
+  if (cfg.runMigrations) {
+    await runMigrations(cfg.databaseUrl);
+  } else {
+    await assertSchemaReady(cfg.databaseUrl);
+  }
   await ensureConsumerGroup(redis, cfg.ingest.stream, cfg.ingest.consumerGroup);
 
   const sweep = () => runSweep({ sql, repo, embedder, fieldsFor, modelVersion, batchSize: cfg.sweep.batchSize })

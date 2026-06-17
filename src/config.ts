@@ -21,11 +21,13 @@ const EnvSchema = z.object({
   CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(45),
   EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
   EMBEDDING_MAX_RETRIES: z.coerce.number().int().nonnegative().default(2),
+  RUN_MIGRATIONS: z.coerce.boolean().default(false),
 });
 
 export type Config = {
   databaseUrl: string;
   redisUrl: string;
+  runMigrations: boolean;
   embedding: { baseUrl: string; model: string; dim: number; apiKey?: string; timeoutMs: number; maxRetries: number };
   ingest: { stream: string; consumerGroup: string; consumerName: string };
   sweep: { intervalMs: number; batchSize: number };
@@ -47,5 +49,6 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     networkConfigPath: e.NETWORK_CONFIG_PATH,
     rerank: { baseUrl: e.RERANK_BASE_URL, model: e.RERANK_MODEL, defaultOn: e.RERANK_DEFAULT, topN: e.RESULT_TOPN },
     cache: { ttlSeconds: e.CACHE_TTL_SECONDS },
+    runMigrations: e.RUN_MIGRATIONS,
   };
 }
