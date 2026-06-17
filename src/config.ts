@@ -10,7 +10,10 @@ const EnvSchema = z.object({
   INGEST_STREAM: z.string().default('signals:item-events'),
   INGEST_CONSUMER_GROUP: z.string().default('signals-search'),
   INGEST_CONSUMER_NAME: z.string().default('worker-1'),
-  PEL_MIN_IDLE_MS: z.coerce.number().int().nonnegative().default(60_000),
+  // Must be > 0 (and in practice >> one processing cycle): XAUTOCLAIM reclaims
+  // from cursor '0-0' each loop, so a near-zero idle would let a worker re-claim
+  // its own just-claimed-but-unacked messages and starve fresh reads.
+  PEL_MIN_IDLE_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(200),
   API_PORT: z.coerce.number().int().positive().default(3100),

@@ -47,6 +47,8 @@ async function main() {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    // Reclaim messages stranded by a dead consumer (idle >= pelMinIdleMs), then
+    // read fresh ones; both flow through the same idempotent process+ack path.
     const reclaimed = await reclaimPending(
       redis, cfg.ingest.stream, cfg.ingest.consumerGroup, cfg.ingest.consumerName, cfg.ingest.pelMinIdleMs, 50,
     ).catch((err) => { console.error('reclaimPending failed', err); return []; });
