@@ -6,7 +6,7 @@ import { ItemSearchRepo, ITEM_SEARCH_VECTOR_DIM } from '../db/item_search_repo.j
 import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
 import { ensureConsumerGroup, readBatch, ackMessages } from '../ingest/stream_consumer.js';
 import { processEvent } from './process_event.js';
-import { runSweep } from '../ingest/sweep.js';
+import { runSweep, sweepOrphans } from '../ingest/sweep.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
 
 async function main() {
@@ -32,8 +32,14 @@ async function main() {
   }
   await ensureConsumerGroup(redis, cfg.ingest.stream, cfg.ingest.consumerGroup);
 
-  const sweep = () => runSweep({ sql, repo, embedder, fieldsFor, modelVersion, batchSize: cfg.sweep.batchSize })
-    .catch((err) => console.error('sweep failed', err));
+  const sweep = async () => {
+    try {
+      await runSweep({ sql, repo, embedder, fieldsFor, modelVersion, batchSize: cfg.sweep.batchSize });
+      await sweepOrphans(sql);
+    } catch (err) {
+      console.error('sweep failed', err);
+    }
+  };
   await sweep();
   setInterval(sweep, cfg.sweep.intervalMs);
 
