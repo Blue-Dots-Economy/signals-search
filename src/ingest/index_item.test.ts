@@ -44,4 +44,27 @@ describe('indexItem', () => {
     expect(res.action).toBe('skipped');
     expect(calls).toBe(0);
   });
+
+  it('indexes geo-only (no embed call) when there is no vectorizable content', async () => {
+    // Regression: an item with none of the vectorized fields populated serializes
+    // to '' — embedding [''] makes TEI 413 ("inputs cannot be empty") and fails
+    // the whole sweep. Such items must index with a NULL vector instead.
+    let calls = 0;
+    const countingEmbedder = { embed: async (t: string[]) => { calls++; return t.map(() => Array.from({ length: 1024 }, () => 0.03125)); } };
+    const emptyContentItem = {
+      item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0',
+      item_id: '9c8b7a65-1111-4222-8333-444455556666',
+      item_state: { provider_category: 'NGO' }, // `fields` is [service_details], absent here
+      item_locations: [{ lat: 12.93, lng: 77.62 }],
+      lifecycle_status: 'live',
+    };
+    const res = await indexItem({ item: emptyContentItem, fields, embedder: countingEmbedder, repo, modelVersion: 'm@1024' });
+    expect(res.action).toBe('indexed');
+    expect(calls).toBe(0); // embedder never called for empty text
+    const rows = await sql<{ embedding: unknown; has_geo: boolean }[]>`
+      SELECT embedding, geo IS NOT NULL AS has_geo FROM item_search WHERE item_id = ${emptyContentItem.item_id}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].embedding).toBeNull();
+    expect(rows[0].has_geo).toBe(true);
+  });
 });
