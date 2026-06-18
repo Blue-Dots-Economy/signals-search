@@ -34,7 +34,11 @@ export async function indexItem(args: {
   if ((await repo.getContentHash(key)) === hash) {
     return { action: 'skipped' };
   }
-  const [embedding] = await embedder.embed([text]);
+  // No vectorizable content (e.g. a profile that hasn't filled any vectorized
+  // field). Don't call the embedder with an empty string — TEI rejects it (413)
+  // and one such item would fail the whole sweep. Index geo-only with a NULL
+  // vector so the item stays discoverable by geo/structured filters.
+  const embedding = text === '' ? null : (await embedder.embed([text]))[0];
   await repo.upsert({
     item_network: item.item_network,
     item_domain: item.item_domain,

@@ -50,6 +50,16 @@ describe('ItemSearchRepo.upsert', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].content_hash).toBe('def');
   });
+
+  it('accepts a NULL embedding (geo-only row) for items without vectorizable content', async () => {
+    const k = { ...key, item_id: '11111111-2222-4333-8444-555566667777' };
+    await repo.upsert({ ...k, embedding: null, locations: [{ lat: 12.9, lng: 77.6 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'geo-only' });
+    const rows = await sql<{ embedding: unknown; has_geo: boolean }[]>`
+      SELECT embedding, geo IS NOT NULL AS has_geo FROM item_search WHERE item_id = ${k.item_id}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].embedding).toBeNull();
+    expect(rows[0].has_geo).toBe(true);
+  });
 });
 
 describe('ItemSearchRepo composite-key reads/deletes', () => {

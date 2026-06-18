@@ -17,7 +17,11 @@ export type ItemKey = {
 };
 
 export type UpsertInput = ItemKey & {
-  embedding: number[];
+  /** null when the item has no vectorizable content; stored as a NULL vector
+   *  (the column is nullable). Such rows stay discoverable via geo/structured
+   *  filters and recency, and search_query ranks them last (NULLS LAST) for
+   *  vector queries. */
+  embedding: number[] | null;
   locations: ItemLocation[];
   lifecycleStatus: string;
   modelVersion: string;
@@ -38,17 +42,17 @@ export class ItemSearchRepo {
   constructor(private readonly sql: Sql, private readonly dim: number) {}
 
   async upsert(input: UpsertInput): Promise<void> {
-    if (input.embedding.length !== this.dim) {
+    if (input.embedding !== null && input.embedding.length !== this.dim) {
       throw new Error(`embedding dim ${input.embedding.length} != ${this.dim}`);
     }
-    const vec = toVectorLiteral(input.embedding);
+    const vec = input.embedding === null ? null : toVectorLiteral(input.embedding);
     const wkt = toMultipointWkt(input.locations);
     await this.sql`
       INSERT INTO item_search
         (item_network, item_domain, item_type, item_id, embedding, geo, lifecycle_status, model_version, content_hash, indexed_at)
       VALUES (
         ${input.item_network}, ${input.item_domain}, ${input.item_type}, ${input.item_id},
-        ${vec}::vector,
+        ${vec === null ? this.sql`NULL` : this.sql`${vec}::vector`},
         ${wkt ? this.sql`ST_SetSRID(ST_GeomFromText(${wkt}), 4326)::geography` : this.sql`NULL`},
         ${input.lifecycleStatus}, ${input.modelVersion}, ${input.contentHash}, now()
       )
