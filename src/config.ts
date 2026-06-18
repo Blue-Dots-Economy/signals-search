@@ -1,5 +1,16 @@
 import { z } from 'zod';
 
+// z.coerce.boolean() coerces via Boolean(), so EVERY non-empty string — including
+// the literal "false" — becomes true. That silently defeats env flags like
+// RUN_MIGRATIONS="false". Parse env booleans by value instead: accept real
+// booleans plus the canonical string forms, and reject anything else (fail fast
+// rather than guess). Undefined falls back to the supplied default.
+const envBool = (defaultValue: boolean) =>
+  z
+    .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+    .default(defaultValue)
+    .transform((v) => v === true || v === 'true' || v === '1');
+
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -20,12 +31,12 @@ const EnvSchema = z.object({
   NETWORK_CONFIG_PATH: z.string().min(1),
   RERANK_BASE_URL: z.string().url().optional(),
   RERANK_MODEL: z.string().default('BAAI/bge-reranker-v2-m3'),
-  RERANK_DEFAULT: z.coerce.boolean().default(false),
+  RERANK_DEFAULT: envBool(false),
   RESULT_TOPN: z.coerce.number().int().positive().default(50),
   CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(45),
   EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
   EMBEDDING_MAX_RETRIES: z.coerce.number().int().nonnegative().default(2),
-  RUN_MIGRATIONS: z.coerce.boolean().default(false),
+  RUN_MIGRATIONS: envBool(false),
 });
 
 export type Config = {
