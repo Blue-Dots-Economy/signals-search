@@ -67,3 +67,9 @@ export const SearchResponseSchema = z.object({
     meta: z.object({ total: z.number(), limit: z.number(), offset: z.number() }),
   }),
 });
+export type SearchResponse = z.infer<typeof SearchResponseSchema>;
+
+export const ErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+});
