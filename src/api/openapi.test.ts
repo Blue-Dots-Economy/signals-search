@@ -11,6 +11,7 @@ const deps = {
   rerank: { model: 'r', defaultOn: false, topN: 50 },
   cacheTtlSeconds: 0,
   embeddingDim: 1024,
+  defaultDistanceMeters: 30000,
 } as ApiDeps;
 
 describe('OpenAPI / served docs', () => {

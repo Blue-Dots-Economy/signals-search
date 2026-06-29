@@ -11,8 +11,12 @@ export const ContextSchema = z.object({
 
 const SpatialClauseSchema = z.object({
   op: z.literal('s_dwithin'),
-  geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }),
-  distanceMeters: z.number().positive(),
+  // Optional: when omitted, the search center is taken from the anchor item
+  // (`intent.item.id`) — "search near this profile's own location". When
+  // present, the explicit point is used and the profile's location is ignored.
+  geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }).optional(),
+  // Optional: falls back to SEARCH_DEFAULT_DISTANCE_METERS when omitted.
+  distanceMeters: z.number().positive().optional(),
 });
 
 const FilterClauseSchema = z.object({
@@ -36,6 +40,18 @@ export const IntentSchema = z.object({
   item: z.object({ id: z.string().uuid() }).optional(),
   spatial: z.array(SpatialClauseSchema).optional(),
   filters: z.array(FilterClauseSchema).optional(),
+}).superRefine((intent, ctx) => {
+  // A spatial clause without `geometry` derives the search center from the
+  // anchor item, so it requires `item.id`. Without an anchor there is no point
+  // to search around.
+  const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => !s.geometry);
+  if (hasAnchorlessSpatial && !intent.item?.id) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'a spatial clause without geometry requires intent.item.id (the location is taken from the anchor item)',
+      path: ['spatial'],
+    });
+  }
 });
 
 export const PaginationSchema = z.object({
