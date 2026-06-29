@@ -25,8 +25,8 @@ beforeAll(async () => {
     lifecycle_status text NOT NULL DEFAULT 'live',
     PRIMARY KEY (item_network, item_domain, item_type, item_id))`;
   await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations,lifecycle_status) VALUES
-    (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust"}','[{"lat":12.93,"lng":77.62}]','live'),
-    (${base.item_network},${base.item_domain},${base.item_type},${B},'{"provider_category":"Private"}','[{"lat":19.07,"lng":72.87}]','live')`;
+    (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","services_offered":["Assistive Devices","Training"]}','[{"lat":12.93,"lng":77.62}]','live'),
+    (${base.item_network},${base.item_domain},${base.item_type},${B},'{"provider_category":"Private","services_offered":["Counselling"]}','[{"lat":19.07,"lng":72.87}]','live')`;
   const repo = new ItemSearchRepo(sql, N);
   await repo.upsert({ ...base, item_id: A, embedding: vec(1), locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'a' });
   await repo.upsert({ ...base, item_id: B, embedding: vec(0), locations: [{ lat: 19.07, lng: 72.87 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'b' });
@@ -46,6 +46,27 @@ describe('searchItems', () => {
     });
     expect(total).toBe(1);
     expect(rows.map((r) => r.item_id)).toEqual([A]);
+  });
+  it('applies a contains filter on an array-valued item_state field', async () => {
+    // A: services_offered=[Assistive Devices, Training]; B: [Counselling]
+    const { rows, total } = await searchItems(sql, {
+      ...base, queryVector: vec(1), limit: 10, offset: 0,
+      filters: [{ op: 'contains', target: 'item_state.services_offered', value: ['Assistive Devices'] }],
+    });
+    expect(total).toBe(1);
+    expect(rows.map((r) => r.item_id)).toEqual([A]);
+  });
+  it('contains requires ALL given values (jsonb @> semantics)', async () => {
+    const both = await searchItems(sql, {
+      ...base, queryVector: vec(1), limit: 10, offset: 0,
+      filters: [{ op: 'contains', target: 'item_state.services_offered', value: ['Assistive Devices', 'Training'] }],
+    });
+    expect(both.rows.map((r) => r.item_id)).toEqual([A]); // A has both
+    const partial = await searchItems(sql, {
+      ...base, queryVector: vec(1), limit: 10, offset: 0,
+      filters: [{ op: 'contains', target: 'item_state.services_offered', value: ['Assistive Devices', 'Counselling'] }],
+    });
+    expect(partial.total).toBe(0); // no single item has both
   });
   it('applies a geo s_dwithin filter (only nearby item)', async () => {
     const { rows } = await searchItems(sql, {
