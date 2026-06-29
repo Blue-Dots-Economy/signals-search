@@ -33,7 +33,12 @@ function filterFragment(sql: Sql, f: FilterClause): PendingQuery<Row[]> {
     case 'lte': return sql`(i.item_state->>${key})::numeric <= ${Number(f.value)}`;
     case 'contains': {
       const arr = Array.isArray(f.value) ? f.value : [f.value];
-      return sql`(i.item_state->${key}) @> ${JSON.stringify(arr)}::jsonb`;
+      // Bind the value as real jsonb via postgres.js's sql.json(). A plain
+      // `${JSON.stringify(arr)}::jsonb` is sent as a text param and the cast
+      // re-parses it into a jsonb *string scalar* (double-encoded), so
+      // `array @> "..."` is always false — array-field filtering silently
+      // returned nothing. sql.json() sends a proper jsonb array.
+      return sql`(i.item_state->${key}) @> ${sql.json(arr as unknown as Parameters<typeof sql.json>[0])}`;
     }
   }
 }
