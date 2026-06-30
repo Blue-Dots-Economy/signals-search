@@ -38,7 +38,10 @@ const FilterClauseSchema = z.object({
 export const IntentSchema = z.object({
   textSearch: z.string().min(1).optional(),
   item: z.object({ id: z.string().uuid() }).optional(),
-  spatial: z.array(SpatialClauseSchema).optional(),
+  // At most one spatial clause: the search applies a single radius filter
+  // (only the first clause was ever consumed), so reject extras explicitly
+  // rather than silently ignoring them.
+  spatial: z.array(SpatialClauseSchema).max(1, 'at most one spatial clause is supported').optional(),
   filters: z.array(FilterClauseSchema).optional(),
 }).superRefine((intent, ctx) => {
   // A spatial clause without `geometry` derives the search center from the

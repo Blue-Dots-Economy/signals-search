@@ -49,4 +49,11 @@ describe('SearchRequestSchema', () => {
     const bad = { context: valid.context, message: { intent: { textSearch: 'x', spatial: [{ op: 's_dwithin', distanceMeters: 5000 }] } } };
     expect(() => SearchRequestSchema.parse(bad)).toThrow();
   });
+  it('rejects more than one spatial clause (only one is supported)', () => {
+    const bad = { context: valid.context, message: { intent: { spatial: [
+      { op: 's_dwithin', geometry: { type: 'Point', coordinates: [77.6, 12.9] }, distanceMeters: 5000 },
+      { op: 's_dwithin', geometry: { type: 'Point', coordinates: [72.8, 19.0] }, distanceMeters: 5000 },
+    ] } } };
+    expect(() => SearchRequestSchema.parse(bad)).toThrow();
+  });
 });
