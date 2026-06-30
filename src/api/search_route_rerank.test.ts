@@ -54,6 +54,7 @@ beforeAll(async () => {
       rerank: { model: 'r', defaultOn: true, baseUrl: 'http://unused-reranker:8081', topN: 50 },
       cacheTtlSeconds: 0,
       embeddingDim: N,
+      defaultDistanceMeters: 30000,
     },
   });
 });
