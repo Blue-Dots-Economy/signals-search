@@ -20,7 +20,7 @@ const SpatialClauseSchema = z.object({
 });
 
 const FilterClauseSchema = z.object({
-  op: z.enum(['eq', 'neq', 'in', 'contains', 'gt', 'gte', 'lt', 'lte']),
+  op: z.enum(['eq', 'neq', 'in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
   target: z.string().regex(/^item_state\.[A-Za-z0-9_]+$/, 'target must be item_state.<field>'),
   value: z.unknown(),
 }).superRefine((f, ctx) => {

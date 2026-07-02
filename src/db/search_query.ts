@@ -1,6 +1,6 @@
 import type { Sql, PendingQuery, Row } from 'postgres';
 
-export type FilterClause = { op: 'eq' | 'neq' | 'in' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte'; target: string; value: unknown };
+export type FilterClause = { op: 'eq' | 'neq' | 'in' | 'contains' | 'contains_any' | 'gt' | 'gte' | 'lt' | 'lte'; target: string; value: unknown };
 export type SearchParams = {
   item_network: string;
   item_domain: string;
@@ -39,6 +39,15 @@ function filterFragment(sql: Sql, f: FilterClause): PendingQuery<Row[]> {
       // `array @> "..."` is always false — array-field filtering silently
       // returned nothing. sql.json() sends a proper jsonb array.
       return sql`(i.item_state->${key}) @> ${sql.json(arr as unknown as Parameters<typeof sql.json>[0])}`;
+    }
+    case 'contains_any': {
+      // jsonb `?|`: true when the array-valued field shares AT LEAST ONE
+      // element with the given list ("contains any of"). Complements `contains`
+      // (`@>` = must contain ALL). Values bound as a text[] parameter (never
+      // interpolated); `?|` is a literal operator, not a placeholder, in
+      // postgres.js. A single non-array value is wrapped, mirroring `contains`.
+      const arr = (Array.isArray(f.value) ? f.value : [f.value]).map(String);
+      return sql`(i.item_state->${key}) ?| ${arr}::text[]`;
     }
   }
 }
