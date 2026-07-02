@@ -68,6 +68,27 @@ describe('searchItems', () => {
     });
     expect(partial.total).toBe(0); // no single item has both
   });
+  it('contains_any matches items sharing ANY given value (jsonb ?| semantics)', async () => {
+    // A: services_offered=[Assistive Devices, Training]; B: [Counselling]
+    const anyMatch = await searchItems(sql, {
+      ...base, queryVector: vec(1), limit: 10, offset: 0,
+      filters: [{ op: 'contains_any', target: 'item_state.services_offered', value: ['Training', 'Counselling'] }],
+    });
+    expect(anyMatch.total).toBe(2); // A has Training, B has Counselling
+    expect(anyMatch.rows.map((r) => r.item_id).sort()).toEqual([A, B].sort());
+
+    const oneMatch = await searchItems(sql, {
+      ...base, queryVector: vec(1), limit: 10, offset: 0,
+      filters: [{ op: 'contains_any', target: 'item_state.services_offered', value: ['Counselling'] }],
+    });
+    expect(oneMatch.rows.map((r) => r.item_id)).toEqual([B]);
+
+    const noMatch = await searchItems(sql, {
+      ...base, queryVector: vec(1), limit: 10, offset: 0,
+      filters: [{ op: 'contains_any', target: 'item_state.services_offered', value: ['Nonexistent'] }],
+    });
+    expect(noMatch.total).toBe(0);
+  });
   it('applies a geo s_dwithin filter (only nearby item)', async () => {
     const { rows } = await searchItems(sql, {
       ...base, queryVector: vec(1), filters: [], limit: 10, offset: 0,
