@@ -28,6 +28,8 @@ const EnvSchema = z.object({
   SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(200),
   API_PORT: z.coerce.number().int().positive().default(3100),
+  // Default radius (meters) for a spatial clause that omits distanceMeters.
+  SEARCH_DEFAULT_DISTANCE_METERS: z.coerce.number().positive().default(30_000),
   NETWORK_CONFIG_PATH: z.string().min(1),
   RERANK_BASE_URL: z.string().url().optional(),
   RERANK_MODEL: z.string().default('BAAI/bge-reranker-v2-m3'),
@@ -50,6 +52,7 @@ export type Config = {
   networkConfigPath: string;
   rerank: { baseUrl?: string; model: string; defaultOn: boolean; topN: number };
   cache: { ttlSeconds: number };
+  search: { defaultDistanceMeters: number };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): Config {
@@ -64,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     networkConfigPath: e.NETWORK_CONFIG_PATH,
     rerank: { baseUrl: e.RERANK_BASE_URL, model: e.RERANK_MODEL, defaultOn: e.RERANK_DEFAULT, topN: e.RESULT_TOPN },
     cache: { ttlSeconds: e.CACHE_TTL_SECONDS },
+    search: { defaultDistanceMeters: e.SEARCH_DEFAULT_DISTANCE_METERS },
     runMigrations: e.RUN_MIGRATIONS,
   };
 }

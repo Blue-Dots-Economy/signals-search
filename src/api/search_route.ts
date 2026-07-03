@@ -24,6 +24,7 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
         401: ErrorSchema,
         403: ErrorSchema,
         404: ErrorSchema,
+        422: ErrorSchema,
       },
     },
   }, async (request, reply) => {
@@ -43,9 +44,18 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
     // freshness (a deindexed anchor → 404) are always re-checked and never
     // served from a stale cache entry.
     let queryVector: number[] | undefined;
+    // Anchor's own stored location (first point of its geo), used when a
+    // spatial clause omits geometry ("search near this profile's location").
+    let anchorLat: number | null = null;
+    let anchorLng: number | null = null;
     if (message.intent.item?.id) {
-      const rows = await deps.sql<{ item_domain: string; embedding: string | null }[]>`
-        SELECT item_domain, embedding::text AS embedding FROM item_search WHERE item_id = ${message.intent.item.id} LIMIT 1`;
+      // geo is a geography(MultiPoint); use ST_GeometryN to take the first
+      // point (ST_PointN only works on LineStrings → NULL for MultiPoint).
+      const rows = await deps.sql<{ item_domain: string; embedding: string | null; lat: number | null; lng: number | null }[]>`
+        SELECT item_domain, embedding::text AS embedding,
+               ST_Y(ST_GeometryN(geo::geometry, 1)) AS lat,
+               ST_X(ST_GeometryN(geo::geometry, 1)) AS lng
+        FROM item_search WHERE item_id = ${message.intent.item.id} LIMIT 1`;
       if (rows.length === 0 || !rows[0].embedding) {
         return reply.code(404).send({ error: 'ANCHOR_NOT_FOUND', message: 'anchor item not indexed' });
       }
@@ -53,6 +63,8 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
         return reply.code(403).send({ error: 'INTERACTION_NOT_ALLOWED', message: `${rows[0].item_domain} → ${domain} not permitted` });
       }
       queryVector = JSON.parse(rows[0].embedding) as number[];
+      anchorLat = rows[0].lat;
+      anchorLng = rows[0].lng;
     }
 
     const spatial = message.intent.spatial?.[0];
@@ -76,12 +88,32 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
     // both the stage-1 over-fetch and the slice-back — otherwise we over-fetch without
     // re-paginating (e.g. an anchor search with rerank on would return up to topN rows
     // and ignore the requested offset). See PR #7 review.
+    // Resolve the spatial search center:
+    //  - geometry present → use the explicit point (profile location ignored)
+    //  - geometry absent  → use the anchor's own location (item.id guaranteed
+    //    by the schema refine); 422 if the anchor has no stored location
+    //  - distanceMeters falls back to the configured default when omitted
+    let spatialParam: { lat: number; lng: number; distanceMeters: number } | undefined;
+    if (spatial) {
+      const distanceMeters = spatial.distanceMeters ?? deps.defaultDistanceMeters;
+      if (spatial.geometry) {
+        spatialParam = { lat: spatial.geometry.coordinates[1], lng: spatial.geometry.coordinates[0], distanceMeters };
+      } else if (anchorLat != null && anchorLng != null) {
+        spatialParam = { lat: anchorLat, lng: anchorLng, distanceMeters };
+      } else {
+        return reply.code(422).send({
+          error: 'ANCHOR_HAS_NO_LOCATION',
+          message: 'the anchor item has no stored location. Provide geometry with distanceMeters to search a specific area, or remove the spatial clause to search without a location filter.',
+        });
+      }
+    }
+
     const willRerank = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
     const topN = Math.max(pagination.limit, deps.rerank.topN);
     const { rows, total } = await searchItems(deps.sql, {
       item_network: networkId, item_domain: domain, item_type: itemType,
       queryVector,
-      spatial: spatial ? { lat: spatial.geometry.coordinates[1], lng: spatial.geometry.coordinates[0], distanceMeters: spatial.distanceMeters } : undefined,
+      spatial: spatialParam,
       filters: (message.intent.filters ?? []) as FilterClause[],
       limit: willRerank ? topN : pagination.limit,
       offset: willRerank ? 0 : pagination.offset,

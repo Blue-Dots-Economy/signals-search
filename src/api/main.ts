@@ -12,7 +12,7 @@ async function main() {
   const embedder = new OpenAiCompatibleEmbedder(cfg.embedding);
   const registry = await loadNetworkRegistry(cfg.networkConfigPath);
   const app = buildServer({
-    deps: { sql, redis, embedder, registry, rerank: cfg.rerank, cacheTtlSeconds: cfg.cache.ttlSeconds, embeddingDim: cfg.embedding.dim },
+    deps: { sql, redis, embedder, registry, rerank: cfg.rerank, cacheTtlSeconds: cfg.cache.ttlSeconds, embeddingDim: cfg.embedding.dim, defaultDistanceMeters: cfg.search.defaultDistanceMeters },
   });
   await app.listen({ host: '0.0.0.0', port: cfg.api.port });
 }
