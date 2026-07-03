@@ -23,6 +23,7 @@ export type ApiDeps = {
   rerank: { baseUrl?: string; model: string; defaultOn: boolean; topN: number };
   cacheTtlSeconds: number;
   embeddingDim: number;
+  defaultDistanceMeters: number;
 };
 
 export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {

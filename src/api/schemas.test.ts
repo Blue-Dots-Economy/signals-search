@@ -37,4 +37,23 @@ describe('SearchRequestSchema', () => {
     const ok = { context: valid.context, message: { intent: { filters: [{ op: 'gt', target: 'item_state.age', value: 18 }] } } };
     expect(() => SearchRequestSchema.parse(ok)).not.toThrow();
   });
+  it('accepts a coordinate-less spatial clause when an anchor item.id is present', () => {
+    const ok = { context: valid.context, message: { intent: { item: { id: '11111111-1111-1111-1111-111111111111' }, spatial: [{ op: 's_dwithin', distanceMeters: 5000 }] } } };
+    expect(() => SearchRequestSchema.parse(ok)).not.toThrow();
+  });
+  it('accepts a coordinate-less spatial clause without distanceMeters (default applied at runtime)', () => {
+    const ok = { context: valid.context, message: { intent: { item: { id: '11111111-1111-1111-1111-111111111111' }, spatial: [{ op: 's_dwithin' }] } } };
+    expect(() => SearchRequestSchema.parse(ok)).not.toThrow();
+  });
+  it('rejects a coordinate-less spatial clause without an anchor item.id', () => {
+    const bad = { context: valid.context, message: { intent: { textSearch: 'x', spatial: [{ op: 's_dwithin', distanceMeters: 5000 }] } } };
+    expect(() => SearchRequestSchema.parse(bad)).toThrow();
+  });
+  it('rejects more than one spatial clause (only one is supported)', () => {
+    const bad = { context: valid.context, message: { intent: { spatial: [
+      { op: 's_dwithin', geometry: { type: 'Point', coordinates: [77.6, 12.9] }, distanceMeters: 5000 },
+      { op: 's_dwithin', geometry: { type: 'Point', coordinates: [72.8, 19.0] }, distanceMeters: 5000 },
+    ] } } };
+    expect(() => SearchRequestSchema.parse(bad)).toThrow();
+  });
 });

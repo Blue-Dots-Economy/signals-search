@@ -11,12 +11,16 @@ export const ContextSchema = z.object({
 
 const SpatialClauseSchema = z.object({
   op: z.literal('s_dwithin'),
-  geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }),
-  distanceMeters: z.number().positive(),
+  // Optional: when omitted, the search center is taken from the anchor item
+  // (`intent.item.id`) — "search near this profile's own location". When
+  // present, the explicit point is used and the profile's location is ignored.
+  geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }).optional(),
+  // Optional: falls back to SEARCH_DEFAULT_DISTANCE_METERS when omitted.
+  distanceMeters: z.number().positive().optional(),
 });
 
 const FilterClauseSchema = z.object({
-  op: z.enum(['eq', 'neq', 'in', 'contains', 'gt', 'gte', 'lt', 'lte']),
+  op: z.enum(['eq', 'neq', 'in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
   target: z.string().regex(/^item_state\.[A-Za-z0-9_]+$/, 'target must be item_state.<field>'),
   value: z.unknown(),
 }).superRefine((f, ctx) => {
@@ -34,8 +38,23 @@ const FilterClauseSchema = z.object({
 export const IntentSchema = z.object({
   textSearch: z.string().min(1).optional(),
   item: z.object({ id: z.string().uuid() }).optional(),
-  spatial: z.array(SpatialClauseSchema).optional(),
+  // At most one spatial clause: the search applies a single radius filter
+  // (only the first clause was ever consumed), so reject extras explicitly
+  // rather than silently ignoring them.
+  spatial: z.array(SpatialClauseSchema).max(1, 'at most one spatial clause is supported').optional(),
   filters: z.array(FilterClauseSchema).optional(),
+}).superRefine((intent, ctx) => {
+  // A spatial clause without `geometry` derives the search center from the
+  // anchor item, so it requires `item.id`. Without an anchor there is no point
+  // to search around.
+  const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => !s.geometry);
+  if (hasAnchorlessSpatial && !intent.item?.id) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'a spatial clause without geometry requires intent.item.id (the location is taken from the anchor item)',
+      path: ['spatial'],
+    });
+  }
 });
 
 export const PaginationSchema = z.object({
