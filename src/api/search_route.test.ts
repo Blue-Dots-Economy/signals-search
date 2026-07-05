@@ -15,6 +15,7 @@ const RAW = 'sk_signals_route_test_key_abcdefghijklmnop';
 const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0' };
 const seekerBase = { item_network: 'purple_dot', item_domain: 'seeker', item_type: 'profile_1.0' };
 const A = '11111111-1111-1111-1111-111111111111';
+const B = '22222222-2222-2222-2222-222222222222'; // anchor that exists only under network blue_dot
 const S1 = '33333333-3333-3333-3333-333333333333'; // seeker anchor WITH a location (co-located with A)
 const S2 = '44444444-4444-4444-4444-444444444444'; // seeker anchor with NO location
 const fakeEmbedder = { embed: async (t: string[]) => t.map(() => { const v = Array.from({ length: N }, () => 0); v[0] = 1; return v; }) };
@@ -28,11 +29,14 @@ beforeAll(async () => {
   await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES
     (${seekerBase.item_network},${seekerBase.item_domain},${seekerBase.item_type},${S1},'{"needs":"speech therapy"}','[{"lat":12.93,"lng":77.62}]'),
     (${seekerBase.item_network},${seekerBase.item_domain},${seekerBase.item_type},${S2},'{"needs":"speech therapy"}','[]')`;
-  await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, user_id text, enabled boolean NOT NULL DEFAULT true)`;
+  await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, user_id text, enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
   await sql`INSERT INTO "apikey" (id,key,user_id,enabled) VALUES ('k1', ${createHash('sha256').update(RAW).digest('base64url')}, 'usr_1', true)`;
   const repo = new ItemSearchRepo(sql, N);
   const v = Array.from({ length: N }, () => 0); v[0] = 1;
   await repo.upsert({ ...base, item_id: A, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'a' });
+  // Foreign-network anchor: same item_id UUID would resolve under the old
+  // item_id-only lookup; the network-scoped lookup must not see it (1.9b).
+  await repo.upsert({ item_network: 'blue_dot', item_domain: 'provider', item_type: 'profile_1.0', item_id: B, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'b' });
   await repo.upsert({ ...seekerBase, item_id: S1, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 's1' });
   await repo.upsert({ ...seekerBase, item_id: S2, embedding: v, locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 's2' });
   const registry = await loadNetworkRegistry('test/fixtures/networks');
@@ -104,5 +108,13 @@ describe('POST /v1/search — anchor + location (#21)', () => {
   it('400 when a coordinate-less spatial is sent without item.id', async () => {
     const res = await app.inject({ method: 'POST', url: '/v1/search', headers: { 'x-api-key': RAW }, payload: anchorBody({ textSearch: 'speech therapy', spatial: [{ op: 's_dwithin', distanceMeters: 5000 }] }) });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('404 for a cross-network anchor (anchor lookup scoped by networkId, 1.9b)', async () => {
+    // Caller is purple_dot; B exists only under blue_dot. The anchor must be
+    // invisible cross-network → 404, not resolved from the foreign row.
+    const res = await app.inject({ method: 'POST', url: '/v1/search', headers: { 'x-api-key': RAW }, payload: anchorBody({ item: { id: B } }) });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe('ANCHOR_NOT_FOUND');
   });
 });
