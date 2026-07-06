@@ -51,11 +51,20 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
     if (message.intent.item?.id) {
       // geo is a geography(MultiPoint); use ST_GeometryN to take the first
       // point (ST_PointN only works on LineStrings → NULL for MultiPoint).
+      // Scope by item_network so the lookup uses the composite-PK index
+      // (item_network is the leading column) instead of a seq scan, AND can
+      // only ever resolve an anchor inside the caller's own network — the
+      // anchor's embedding/domain/lat/lng below all come from THIS row, so a
+      // cross-network anchor would be an authz hole. We intentionally do NOT
+      // scope by domain/item_type: the anchor legitimately belongs to a
+      // different domain/type than context (interaction matrix = authz).
       const rows = await deps.sql<{ item_domain: string; embedding: string | null; lat: number | null; lng: number | null }[]>`
         SELECT item_domain, embedding::text AS embedding,
                ST_Y(ST_GeometryN(geo::geometry, 1)) AS lat,
                ST_X(ST_GeometryN(geo::geometry, 1)) AS lng
-        FROM item_search WHERE item_id = ${message.intent.item.id} LIMIT 1`;
+        FROM item_search
+        WHERE item_network = ${networkId} AND item_id = ${message.intent.item.id}
+        LIMIT 1`;
       if (rows.length === 0 || !rows[0].embedding) {
         return reply.code(404).send({ error: 'ANCHOR_NOT_FOUND', message: 'anchor item not indexed' });
       }
