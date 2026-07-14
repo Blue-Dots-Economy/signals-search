@@ -68,6 +68,12 @@ export const SearchRequestSchema = z.object({
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
+// Body shape for POST /v1/search/flat: a flat object of dot-delimited canonical
+// paths (numeric segment = array index), values may all be strings. It cannot be
+// described by SearchRequestSchema, so the route accepts this permissive record
+// and validates against SearchRequestSchema AFTER unflattening + JSON-parsing.
+export const FlatSearchRequestSchema = z.record(z.string(), z.unknown());
+
 export const ItemResultSchema = z.object({
   item_network: z.string(),
   item_domain: z.string(),

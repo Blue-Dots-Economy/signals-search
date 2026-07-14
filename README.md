@@ -43,6 +43,47 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 - **Live-only discovery.** Only `lifecycle_status = 'live'` items are returned.
 - **Authenticated.** `/v1/search` requires an API key, validated against Signals' existing key store.
 
+## Flattened search — `POST /v1/search/flat` (for one-level-only tool integrations)
+
+Some LLM-tool platforms (e.g. **Raya / Litwiz**, which drives the voice bot) can only produce a **flat object of string values** — they can't build the deeply nested `/v1/search` body (`message.intent.spatial[].geometry.coordinates`). `POST /v1/search/flat` accepts that flat shape and runs the **exact same search**; the canonical `/v1/search` contract is unchanged.
+
+Rules for the flat body:
+
+- Keys are the **dot-delimited canonical path** into the nested request.
+- A **numeric key segment is an array index** (`...filters.0.op`, `...coordinates.1`).
+- **Values may all be strings.** Each leaf is `JSON.parse`d to restore its real type (`"20"`→`20`, `"true"`→`true`, `["a","b"]`→array); if it isn't valid JSON it stays a string (`"plumber"`).
+- **Edge case:** a numeric-looking filter value like a pincode `"560001"` parses to the **number** `560001`. To keep it a string, send a JSON-quoted string: `"\"560001\""`.
+
+Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as `/v1/search` (raised after unflattening). Worked examples, one per mode:
+
+```jsonc
+// free-text
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-1", "message.intent.textSearch": "plumber" }
+
+// anchor ("more like this profile")
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-2", "message.intent.item.id": "0e0f...-uuid" }
+
+// geo (explicit point + radius)
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-3", "message.intent.textSearch": "plumber",
+  "message.intent.spatial.0.op": "s_dwithin",
+  "message.intent.spatial.0.geometry.type": "Point",
+  "message.intent.spatial.0.geometry.coordinates.0": "77.59",
+  "message.intent.spatial.0.geometry.coordinates.1": "12.97",
+  "message.intent.spatial.0.distanceMeters": "5000" }
+
+// structured filter
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-4", "message.intent.textSearch": "plumber",
+  "message.intent.filters.0.op": "eq",
+  "message.intent.filters.0.target": "item_state.trade",
+  "message.intent.filters.0.value": "plumber" }
+```
+
+The live request/response schema is also published in the generated OpenAPI at `/documentation` (spec JSON at `/documentation/json`).
+
 ## Scope
 
 **In V1:** local single-instance search, ingestion worker, query API, embedding abstraction, Redis caching.
