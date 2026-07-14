@@ -68,4 +68,19 @@ describe('unflatten', () => {
       message: { pagination: { limit: 20 } },
     });
   });
+
+  it('does not pollute Object.prototype via __proto__/constructor/prototype segments', () => {
+    const result = unflatten({
+      '__proto__.polluted': 'yes',
+      'constructor.prototype.polluted2': 'yes2',
+      'message.__proto__.polluted3': 'yes3',
+      'context.messageId': 'safe',
+    });
+    // No global pollution.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted2).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted3).toBeUndefined();
+    // Dangerous keys are dropped entirely; benign keys still build.
+    expect(result).toEqual({ context: { messageId: 'safe' } });
+  });
 });

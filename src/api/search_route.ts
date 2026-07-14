@@ -202,7 +202,13 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
     if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
     const parsed = SearchRequestSchema.safeParse(unflatten(request.body as Record<string, unknown>));
     if (!parsed.success) {
-      return reply.code(400).send({ error: 'VALIDATION_ERROR', message: parsed.error.message });
+      // Concise, path-prefixed message (the raw ZodError JSON is unhelpful to
+      // the non-developer integrators this route targets). The canonical route
+      // returns the fastify-zod message; both share error:'VALIDATION_ERROR'/400.
+      const message = parsed.error.issues
+        .map((i) => `${i.path.join('.') || '(body)'}: ${i.message}`)
+        .join('; ');
+      return reply.code(400).send({ error: 'VALIDATION_ERROR', message });
     }
     return runSearch(reply, deps, parsed.data);
   });

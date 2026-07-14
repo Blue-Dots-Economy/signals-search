@@ -120,6 +120,21 @@ describe('POST /v1/search/flat', () => {
     expect(flat.json().message.items[0].item_id).toBe(A);
   });
 
+  it('ignores prototype-pollution keys without mutating Object.prototype', async () => {
+    const res = await post('/v1/search/flat', {
+      'context.messageId': 'm-sec',
+      'context.networkId': ctx.networkId,
+      'context.domain': ctx.domain,
+      'context.itemType': ctx.itemType,
+      'message.intent.textSearch': 'speech therapy',
+      '__proto__.polluted': 'yes',
+      'constructor.prototype.polluted2': 'yes2',
+    });
+    expect(res.statusCode).toBe(200); // dangerous keys dropped, valid request proceeds
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted2).toBeUndefined();
+  });
+
   it('400 when a required field (context.messageId) is missing', async () => {
     const res = await post('/v1/search/flat', {
       'context.networkId': ctx.networkId,

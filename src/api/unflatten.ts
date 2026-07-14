@@ -11,6 +11,13 @@
 
 const INDEX = /^\d+$/;
 
+// Segments that could walk into or mutate an object's prototype. The body is
+// authenticated-but-externally-shaped, so a key like "__proto__.x" must never
+// reach `node[seg] = ...` — that would pollute Object.prototype process-wide,
+// before validation runs. Any key containing one of these segments is dropped
+// (they are never valid canonical paths anyway).
+const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function parseLeaf(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   try {
@@ -24,6 +31,7 @@ export function unflatten(flat: Record<string, unknown>): unknown {
   const root: Record<string | number, unknown> = {};
   for (const [key, rawValue] of Object.entries(flat)) {
     const segments = key.split('.');
+    if (segments.some((s) => FORBIDDEN_SEGMENTS.has(s))) continue;
     let node: Record<string | number, unknown> = root;
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];

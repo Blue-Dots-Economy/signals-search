@@ -52,7 +52,9 @@ Rules for the flat body:
 - Keys are the **dot-delimited canonical path** into the nested request.
 - A **numeric key segment is an array index** (`...filters.0.op`, `...coordinates.1`).
 - **Values may all be strings.** Each leaf is `JSON.parse`d to restore its real type (`"20"`→`20`, `"true"`→`true`, `["a","b"]`→array); if it isn't valid JSON it stays a string (`"plumber"`).
-- **Edge case:** a numeric-looking filter value like a pincode `"560001"` parses to the **number** `560001`. To keep it a string, send a JSON-quoted string: `"\"560001\""`.
+- **Edge case (type coercion):** a numeric-looking value parses to a **number** — a pincode filter value `"560001"` becomes `560001`, and the same applies to string fields that happen to be all-digits (e.g. an all-numeric `context.messageId`, which would then fail validation). To force a string, send a JSON-quoted string: `"\"560001\""`.
+- **Use contiguous array indices from `0`.** A gap (e.g. `filters.0.*` and `filters.2.*` with no `filters.1.*`) leaves a hole in the rebuilt array and is rejected with `400 VALIDATION_ERROR`.
+- Keys containing `__proto__`, `constructor`, or `prototype` segments are ignored (they are never valid canonical paths).
 
 Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as `/v1/search` (raised after unflattening). Worked examples, one per mode:
 
