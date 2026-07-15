@@ -22,7 +22,7 @@ const noRedis = { get: async () => null, set: async () => 'OK' } as any;
 beforeAll(async () => {
   pg = await startPostgres(); const url = pg.getConnectionUri(); await runMigrations(url); sql = sqlClient(url);
   await sql`CREATE TABLE items (item_network text,item_domain text,item_type text,item_id uuid,item_state jsonb NOT NULL DEFAULT '{}',item_locations jsonb NOT NULL DEFAULT '[]',lifecycle_status text NOT NULL DEFAULT 'live',PRIMARY KEY (item_network,item_domain,item_type,item_id))`;
-  await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","service_details":"speech therapy","trade":"plumber"}','[{"lat":12.93,"lng":77.62}]')`;
+  await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","service_details":"speech therapy","trade":"plumber","pincode":"560001"}','[{"lat":12.93,"lng":77.62}]')`;
   await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES
     (${seekerBase.item_network},${seekerBase.item_domain},${seekerBase.item_type},${S1},'{"needs":"speech therapy"}','[{"lat":12.93,"lng":77.62}]')`;
   await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, user_id text, enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
@@ -118,6 +118,60 @@ describe('POST /v1/search/flat', () => {
     expect(flat.statusCode).toBe(200);
     expect(flat.json()).toEqual(nested.json());
     expect(flat.json().message.items[0].item_id).toBe(A);
+  });
+
+  it('numeric-string filter value matches a string-typed field (pincode) — parity with nested', async () => {
+    // The flat route JSON-parses "560001" to the number 560001, while a nested
+    // caller sends the string "560001". Both must match the string-stored
+    // item_state.pincode, because the query builder compares (item_state->>key)
+    // (text) against String(value). Proves finding #2's silent-empty premise
+    // does not hold for this codebase.
+    const nested = await post('/v1/search', {
+      context: { messageId: 'pin', ...ctx },
+      message: { intent: { textSearch: 'speech therapy', filters: [{ op: 'eq', target: 'item_state.pincode', value: '560001' }] } },
+    });
+    const flat = await post('/v1/search/flat', {
+      'context.messageId': 'pin',
+      'context.networkId': ctx.networkId,
+      'context.domain': ctx.domain,
+      'context.itemType': ctx.itemType,
+      'message.intent.textSearch': 'speech therapy',
+      'message.intent.filters.0.op': 'eq',
+      'message.intent.filters.0.target': 'item_state.pincode',
+      'message.intent.filters.0.value': '560001',
+    });
+    expect(nested.statusCode).toBe(200);
+    expect(flat.statusCode).toBe(200);
+    expect(flat.json().message.meta.total).toBe(1);
+    expect(flat.json().message.items[0].item_id).toBe(A);
+    expect(flat.json()).toEqual(nested.json());
+  });
+
+  it('400 (not a hang) on an over-large array index (DoS guard)', async () => {
+    const res = await post('/v1/search/flat', {
+      'context.messageId': 'dos',
+      'context.networkId': ctx.networkId,
+      'context.domain': ctx.domain,
+      'context.itemType': ctx.itemType,
+      'message.intent.textSearch': 'speech therapy',
+      'message.intent.filters.1000000000.op': 'eq',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('VALIDATION_ERROR');
+  });
+
+  it('400 (not 500) on conflicting scalar and nested keys', async () => {
+    const res = await post('/v1/search/flat', {
+      'context.messageId': 'conflict',
+      'context.networkId': ctx.networkId,
+      'context.domain': ctx.domain,
+      'context.itemType': ctx.itemType,
+      'message.intent.textSearch': 'speech therapy',
+      // textSearch is both a scalar (above) and given a child here → unflatten throws.
+      'message.intent.textSearch.x': 'boom',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('VALIDATION_ERROR');
   });
 
   it('ignores prototype-pollution keys without mutating Object.prototype', async () => {

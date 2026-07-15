@@ -52,11 +52,12 @@ Rules for the flat body:
 - Keys are the **dot-delimited canonical path** into the nested request.
 - A **numeric key segment is an array index** (`...filters.0.op`, `...coordinates.1`).
 - **Values may all be strings.** Each leaf is `JSON.parse`d to restore its real type (`"20"`→`20`, `"true"`→`true`, `["a","b"]`→array); if it isn't valid JSON it stays a string (`"plumber"`).
-- **Edge case (type coercion):** a numeric-looking value parses to a **number** — a pincode filter value `"560001"` becomes `560001`, and the same applies to string fields that happen to be all-digits (e.g. an all-numeric `context.messageId`, which would then fail validation). To force a string, send a JSON-quoted string: `"\"560001\""`.
-- **Use contiguous array indices from `0`.** A gap (e.g. `filters.0.*` and `filters.2.*` with no `filters.1.*`) leaves a hole in the rebuilt array and is rejected with `400 VALIDATION_ERROR`.
+- **Type coercion is safe for equality filters.** A numeric-looking value parses to a **number** (`"560001"`→`560001`), but the `eq`/`neq`/`in` filter ops compare `item_state->>field` (text) against the value coerced with `String(...)`, so a numeric-string filter value (pincode, id-like code) still matches a string-stored field — no escaping needed. The one exception is the array op **`contains`** (jsonb `@>`, which is type-strict): to match string elements send them as a JSON-quoted string array, e.g. `"[\"560001\"]"`, not `"[560001]"`.
+- **Required string fields must not be all-digits.** An all-numeric `context.messageId`/`networkId` parses to a number and fails validation; send a JSON-quoted string (`"\"12345\""`) if you must use one.
+- **Use contiguous array indices from `0`.** A gap (e.g. `filters.0.*` and `filters.2.*` with no `filters.1.*`) leaves a hole in the rebuilt array and is rejected with `400 VALIDATION_ERROR`. Indices are capped (max 10,000) — a larger index is rejected with `400`, not silently expanded into a huge array.
 - Keys containing `__proto__`, `constructor`, or `prototype` segments are ignored (they are never valid canonical paths).
 
-Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as `/v1/search` (raised after unflattening). Worked examples, one per mode:
+Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as `/v1/search` (raised after unflattening — including a malformed flat body, e.g. an over-large index or a key that is both a scalar and a parent). Worked examples, one per mode:
 
 ```jsonc
 // free-text

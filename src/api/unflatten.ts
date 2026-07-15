@@ -11,6 +11,16 @@
 
 const INDEX = /^\d+$/;
 
+// Upper bound on a numeric path segment (array index). Without it, a single
+// tiny key like "message.intent.filters.1000000000.value" would inflate into a
+// ~10⁹-length sparse array; Zod validation then walks the whole `length` and
+// allocates an issue per hole → event-loop stall / OOM from one small request.
+// Real requests need only a handful of array elements (one spatial clause, a
+// couple of coordinates, a few filters), so a few thousand is ample headroom
+// while keeping any allocation trivially cheap. Exceeding it throws, and the
+// route maps the throw to a 400 (see registerSearchRoute).
+const MAX_ARRAY_INDEX = 10_000;
+
 // Segments that could walk into or mutate an object's prototype. The body is
 // authenticated-but-externally-shaped, so a key like "__proto__.x" must never
 // reach `node[seg] = ...` — that would pollute Object.prototype process-wide,
@@ -35,6 +45,9 @@ export function unflatten(flat: Record<string, unknown>): unknown {
     let node: Record<string | number, unknown> = root;
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
+      if (INDEX.test(seg) && Number(seg) > MAX_ARRAY_INDEX) {
+        throw new Error(`array index ${seg} exceeds maximum ${MAX_ARRAY_INDEX}`);
+      }
       const idx: string | number = INDEX.test(seg) ? Number(seg) : seg;
       if (i === segments.length - 1) {
         node[idx] = parseLeaf(rawValue);

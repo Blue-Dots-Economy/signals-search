@@ -200,7 +200,16 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
     },
   }, async (request, reply) => {
     if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
-    const parsed = SearchRequestSchema.safeParse(unflatten(request.body as Record<string, unknown>));
+    // unflatten can throw on malformed input (an over-large array index, or a
+    // key that both is a scalar and has children, e.g. {"a":"1","a.b":"2"}).
+    // Map those to the same 400 the schema path returns — never a 500.
+    let nested: unknown;
+    try {
+      nested = unflatten(request.body as Record<string, unknown>);
+    } catch {
+      return reply.code(400).send({ error: 'VALIDATION_ERROR', message: 'malformed flat body: keys could not be un-flattened' });
+    }
+    const parsed = SearchRequestSchema.safeParse(nested);
     if (!parsed.success) {
       // Concise, path-prefixed message (the raw ZodError JSON is unhelpful to
       // the non-developer integrators this route targets). The canonical route

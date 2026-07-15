@@ -69,6 +69,24 @@ describe('unflatten', () => {
     });
   });
 
+  it('throws on an array index beyond the maximum (DoS guard)', () => {
+    // A single tiny key must not inflate into a giant sparse array (which Zod
+    // would then iterate/allocate over → event-loop stall / OOM).
+    expect(() => unflatten({ 'message.intent.filters.1000000000.value': 'x' })).toThrow();
+  });
+
+  it('allows array indices up to the maximum', () => {
+    expect(unflatten({ 'a.0': 'x' })).toEqual({ a: ['x'] });
+    // A reasonably large but bounded index is still accepted.
+    const r = unflatten({ 'a.5000': 'x' }) as { a: unknown[] };
+    expect(r.a[5000]).toBe('x');
+  });
+
+  it('throws on conflicting scalar and nested keys (rather than producing junk)', () => {
+    // "a" becomes the scalar "1"; "a.b" then cannot create a property on it.
+    expect(() => unflatten({ a: '1', 'a.b': '2' })).toThrow();
+  });
+
   it('does not pollute Object.prototype via __proto__/constructor/prototype segments', () => {
     const result = unflatten({
       '__proto__.polluted': 'yes',
