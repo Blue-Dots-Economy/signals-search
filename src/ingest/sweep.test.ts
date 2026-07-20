@@ -43,4 +43,24 @@ describe('runSweep', () => {
     const n = await runSweep({ sql, repo, embedder: fakeEmbedder, fieldsFor: () => fields, modelVersion: 'm@1024', batchSize: 50 });
     expect(n).toBe(1);
   });
+
+  it('isolates a failing item — one bad item does not abort the batch', async () => {
+    await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES
+      ('purple_dot','provider','profile_1.0','11111111-1111-4111-8111-111111111111','{"service_details":"BOOM"}','[]'),
+      ('purple_dot','provider','profile_1.0','22222222-2222-4222-8222-222222222222','{"service_details":"good one"}','[]')`;
+    const repo = new ItemSearchRepo(sql, 1024);
+    const flakyEmbedder = {
+      embed: async (t: string[]) => {
+        if (t.some((x) => x.includes('BOOM'))) throw new Error('embed boom');
+        return t.map(() => Array.from({ length: 1024 }, () => 0.03125));
+      },
+    };
+    // Must not throw despite the BOOM item failing; the good item still indexes.
+    const n = await runSweep({ sql, repo, embedder: flakyEmbedder, fieldsFor: () => fields, modelVersion: 'm@1024', batchSize: 50 });
+    expect(n).toBe(1);
+    const rows = await sql<{ item_id: string }[]>`
+      SELECT item_id::text AS item_id FROM item_search
+      WHERE item_id IN ('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222')`;
+    expect(rows.map((r) => r.item_id)).toEqual(['22222222-2222-4222-8222-222222222222']);
+  });
 });

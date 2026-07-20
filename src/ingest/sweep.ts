@@ -24,9 +24,20 @@ export async function runSweep(args: {
 
   let count = 0;
   for (const item of rows) {
-    const fields = fieldsFor(item.item_network, item.item_domain, item.item_type);
-    await indexItem({ item, fields, embedder, repo, modelVersion });
-    count++;
+    // Per-item isolation: one item that throws (bad data, transient embed error)
+    // must not abort the batch. Without this, `ORDER BY updated_at ASC` re-selects
+    // the same failing item as the head of every future sweep and permanently
+    // blocks every item behind it.
+    try {
+      const fields = fieldsFor(item.item_network, item.item_domain, item.item_type);
+      await indexItem({ item, fields, embedder, repo, modelVersion });
+      count++;
+    } catch (err) {
+      console.error('sweep: indexItem failed, skipping item', {
+        item_network: item.item_network, item_domain: item.item_domain,
+        item_type: item.item_type, item_id: item.item_id,
+      }, err);
+    }
   }
   return count;
 }
