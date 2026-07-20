@@ -45,6 +45,11 @@ describe('runSweep', () => {
   });
 
   it('isolates a failing item — one bad item does not abort the batch', async () => {
+    // The previous test left the base item with a future updated_at (now()+1h),
+    // so it would stay perpetually stale and be re-selected here. Neutralize it
+    // so this sweep only considers the two items inserted below.
+    await sql`UPDATE items SET updated_at = now() - interval '1 hour'
+      WHERE item_id = '5d2bcec7-3d5c-4182-a3fc-4d4c2f10addf'`;
     await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES
       ('purple_dot','provider','profile_1.0','11111111-1111-4111-8111-111111111111','{"service_details":"BOOM"}','[]'),
       ('purple_dot','provider','profile_1.0','22222222-2222-4222-8222-222222222222','{"service_details":"good one"}','[]')`;
