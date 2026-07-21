@@ -43,6 +43,50 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 - **Live-only discovery.** Only `lifecycle_status = 'live'` items are returned.
 - **Authenticated.** `/v1/search` requires an API key, validated against Signals' existing key store.
 
+## Flattened search — `POST /v1/search/flat` (for one-level-only tool integrations)
+
+Some LLM-tool platforms (e.g. **Raya / Litwiz**, which drives the voice bot) can only produce a **flat object of string values** — they can't build the deeply nested `/v1/search` body (`message.intent.spatial[].geometry.coordinates`). `POST /v1/search/flat` accepts that flat shape and runs the **exact same search**; the canonical `/v1/search` contract is unchanged.
+
+Rules for the flat body:
+
+- Keys are the **dot-delimited canonical path** into the nested request.
+- A **numeric key segment is an array index** (`...filters.0.op`, `...coordinates.1`).
+- **Values may all be strings.** Each leaf is `JSON.parse`d to restore its real type (`"20"`→`20`, `"true"`→`true`, `["a","b"]`→array); if it isn't valid JSON it stays a string (`"plumber"`).
+- **Type coercion is safe for equality filters.** A numeric-looking value parses to a **number** (`"560001"`→`560001`), but the `eq`/`neq`/`in` filter ops compare `item_state->>field` (text) against the value coerced with `String(...)`, so a numeric-string filter value (pincode, id-like code) still matches a string-stored field — no escaping needed. The one exception is the array op **`contains`** (jsonb `@>`, which is type-strict): to match string elements send them as a JSON-quoted string array, e.g. `"[\"560001\"]"`, not `"[560001]"`.
+- **Required string fields must not be all-digits.** An all-numeric `context.messageId`/`networkId` parses to a number and fails validation; send a JSON-quoted string (`"\"12345\""`) if you must use one.
+- **Use contiguous array indices from `0`.** A gap (e.g. `filters.0.*` and `filters.2.*` with no `filters.1.*`) leaves a hole in the rebuilt array and is rejected with `400 VALIDATION_ERROR`. Indices are capped (max 10,000) — a larger index is rejected with `400`, not silently expanded into a huge array.
+- Keys containing `__proto__`, `constructor`, or `prototype` segments are ignored (they are never valid canonical paths).
+
+Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as `/v1/search` (raised after unflattening — including a malformed flat body, e.g. an over-large index or a key that is both a scalar and a parent). Worked examples, one per mode:
+
+```jsonc
+// free-text
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-1", "message.intent.textSearch": "plumber" }
+
+// anchor ("more like this profile")
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-2", "message.intent.item.id": "0e0f...-uuid" }
+
+// geo (explicit point + radius)
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-3", "message.intent.textSearch": "plumber",
+  "message.intent.spatial.0.op": "s_dwithin",
+  "message.intent.spatial.0.geometry.type": "Point",
+  "message.intent.spatial.0.geometry.coordinates.0": "77.59",
+  "message.intent.spatial.0.geometry.coordinates.1": "12.97",
+  "message.intent.spatial.0.distanceMeters": "5000" }
+
+// structured filter
+{ "context.networkId": "blue_dot", "context.domain": "seeker", "context.itemType": "profile_1.0",
+  "context.messageId": "abc-4", "message.intent.textSearch": "plumber",
+  "message.intent.filters.0.op": "eq",
+  "message.intent.filters.0.target": "item_state.trade",
+  "message.intent.filters.0.value": "plumber" }
+```
+
+The live request/response schema is also published in the generated OpenAPI at `/documentation` (spec JSON at `/documentation/json`).
+
 ## Scope
 
 **In V1:** local single-instance search, ingestion worker, query API, embedding abstraction, Redis caching.
