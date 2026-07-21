@@ -1,10 +1,12 @@
 name: build-image
 
-# Build and publish the signals-search container image to GHCR. One image
+# Manual image build for the signals-search container image on GHCR. One image
 # serves both the worker and the API (Helm picks the entrypoint via `command`).
+#
+# The AUTOMATIC develop publish is gated on CI and lives in ci.yml as the
+# `publish-image` job (needs the test job, same run/commit — so a red build
+# never publishes :develop). This workflow is the manual escape hatch only.
 on:
-  push:
-    branches: [develop]
   workflow_dispatch:
 
 jobs:
