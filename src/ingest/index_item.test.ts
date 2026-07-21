@@ -67,4 +67,22 @@ describe('indexItem', () => {
     expect(rows[0].embedding).toBeNull();
     expect(rows[0].has_geo).toBe(true);
   });
+
+  it('re-indexes when only lifecycle_status changes (hash covers lifecycle)', async () => {
+    // Runs after the skip test above, so `key`'s stored hash reflects the base
+    // item (lifecycle 'live'). A lifecycle-only change must NOT be skipped.
+    const changed = { ...item, lifecycle_status: 'archived' };
+    const res = await indexItem({ item: changed, fields, embedder: fakeEmbedder, repo, modelVersion: 'm@1024' });
+    expect(res.action).toBe('indexed');
+    const rows = await sql<{ lifecycle_status: string }[]>`
+      SELECT lifecycle_status FROM item_search WHERE item_id = ${key.item_id}`;
+    expect(rows[0].lifecycle_status).toBe('archived');
+  });
+
+  it('re-indexes when only item_locations change (hash covers locations)', async () => {
+    // Stored state is now { ..., lifecycle 'archived', loc [12.93,77.62] }.
+    const moved = { ...item, lifecycle_status: 'archived', item_locations: [{ lat: 13.1, lng: 77.7 }] };
+    const res = await indexItem({ item: moved, fields, embedder: fakeEmbedder, repo, modelVersion: 'm@1024' });
+    expect(res.action).toBe('indexed');
+  });
 });

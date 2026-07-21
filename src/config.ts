@@ -21,6 +21,15 @@ const EnvSchema = z.object({
   INGEST_STREAM: z.string().default('signals:item-events'),
   INGEST_CONSUMER_GROUP: z.string().default('signals-search'),
   INGEST_CONSUMER_NAME: z.string().default('worker-1'),
+  // Dead-letter stream for poison messages (schema-invalid events, and events
+  // that fail processing more than INGEST_MAX_DELIVERIES times). Defaults to
+  // `${INGEST_STREAM}:dlq`. Parked entries are acked on the main group so they
+  // stop redelivering; nothing consumes the DLQ automatically (operator triage).
+  INGEST_DLQ_STREAM: z.string().optional(),
+  INGEST_MAX_DELIVERIES: z.coerce.number().int().positive().default(5),
+  // Cap on the DLQ stream length (approximate, `MAXLEN ~`) so poison storms
+  // cannot grow the shared Redis unbounded.
+  INGEST_DLQ_MAXLEN: z.coerce.number().int().positive().default(10_000),
   // Must be > 0 (and in practice >> one processing cycle): XAUTOCLAIM reclaims
   // from cursor '0-0' each loop, so a near-zero idle would let a worker re-claim
   // its own just-claimed-but-unacked messages and starve fresh reads.
@@ -46,7 +55,7 @@ export type Config = {
   redisUrl: string;
   runMigrations: boolean;
   embedding: { baseUrl: string; model: string; dim: number; apiKey?: string; timeoutMs: number; maxRetries: number };
-  ingest: { stream: string; consumerGroup: string; consumerName: string; pelMinIdleMs: number };
+  ingest: { stream: string; consumerGroup: string; consumerName: string; pelMinIdleMs: number; dlqStream: string; maxDeliveries: number; dlqMaxLen: number };
   sweep: { intervalMs: number; batchSize: number };
   api: { port: number };
   networkConfigPath: string;
@@ -61,7 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     databaseUrl: e.DATABASE_URL,
     redisUrl: e.REDIS_URL,
     embedding: { baseUrl: e.EMBEDDING_BASE_URL, model: e.EMBEDDING_MODEL, dim: e.EMBEDDING_DIM, apiKey: e.EMBEDDING_API_KEY, timeoutMs: e.EMBEDDING_TIMEOUT_MS, maxRetries: e.EMBEDDING_MAX_RETRIES },
-    ingest: { stream: e.INGEST_STREAM, consumerGroup: e.INGEST_CONSUMER_GROUP, consumerName: e.INGEST_CONSUMER_NAME, pelMinIdleMs: e.PEL_MIN_IDLE_MS },
+    ingest: { stream: e.INGEST_STREAM, consumerGroup: e.INGEST_CONSUMER_GROUP, consumerName: e.INGEST_CONSUMER_NAME, pelMinIdleMs: e.PEL_MIN_IDLE_MS, dlqStream: e.INGEST_DLQ_STREAM ?? `${e.INGEST_STREAM}:dlq`, maxDeliveries: e.INGEST_MAX_DELIVERIES, dlqMaxLen: e.INGEST_DLQ_MAXLEN },
     sweep: { intervalMs: e.SWEEP_INTERVAL_MS, batchSize: e.SWEEP_BATCH_SIZE },
     api: { port: e.API_PORT },
     networkConfigPath: e.NETWORK_CONFIG_PATH,
