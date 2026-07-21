@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
   serializerCompiler,
@@ -31,9 +32,26 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
     // Redact credential headers so a raw API key can never reach the logs,
     // even if a custom/error serializer ever emits request headers.
     logger: { redact: ['req.headers["x-api-key"]', 'req.headers.authorization'] },
+    // Correlation id: always run genReqId (requestIdHeader:false) so we can
+    // read AND length-cap an inbound `x-request-id` (from Kong or an upstream
+    // caller), falling back to a generated id. Logged as `reqId`.
+    requestIdHeader: false,
+    requestIdLogLabel: 'reqId',
+    genReqId: (req) => {
+      const incoming = req.headers['x-request-id'];
+      if (typeof incoming === 'string' && incoming.length > 0 && incoming.length <= 200) {
+        return incoming;
+      }
+      return `req-${randomUUID()}`;
+    },
   });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  // Echo the resolved correlation id back so callers/Kong can stitch the trace.
+  app.addHook('onRequest', async (req, reply) => {
+    void reply.header('x-request-id', req.id);
+  });
 
   // Route schemas are now Zod (so they self-document via @fastify/swagger). Map the
   // type provider's request-validation failures back to the service's stable 400
