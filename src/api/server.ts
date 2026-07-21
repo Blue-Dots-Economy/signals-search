@@ -15,6 +15,28 @@ import type { Embedder } from '../embedding/provider.js';
 import type { NetworkRegistry } from '../config/network_registry.js';
 import { registerSearchRoute } from './search_route.js';
 
+/**
+ * Runs a dependency check with a hard timeout, collapsing any failure (rejection
+ * or timeout) to `'error'`. Used by the readiness probe so a hung Postgres/Redis
+ * connection can never make the probe itself hang.
+ */
+async function probe(fn: () => Promise<unknown>, ms = 2000): Promise<'ok' | 'error'> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      fn(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), ms);
+      }),
+    ]);
+    return 'ok';
+  } catch {
+    return 'error';
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export type ApiDeps = {
   sql: Sql;
   redis: Redis;
@@ -85,6 +107,35 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
         },
       },
       async () => ({ status: 'ok' }),
+    );
+    instance.withTypeProvider<ZodTypeProvider>().get(
+      '/ready',
+      {
+        schema: {
+          tags: ['health'],
+          summary: 'Readiness probe — checks Postgres + Redis reachability',
+          security: [],
+          response: {
+            200: z.object({ status: z.string() }),
+            503: z.object({
+              status: z.string(),
+              checks: z.object({ postgres: z.string(), redis: z.string() }),
+            }),
+          },
+        },
+      },
+      async (_req, reply) => {
+        const [postgresStatus, redisStatus] = await Promise.all([
+          probe(() => opts.deps.sql`select 1`),
+          probe(() => opts.deps.redis.ping()),
+        ]);
+        if (postgresStatus === 'ok' && redisStatus === 'ok') {
+          return { status: 'ready' };
+        }
+        return reply
+          .code(503)
+          .send({ status: 'not_ready', checks: { postgres: postgresStatus, redis: redisStatus } });
+      },
     );
     registerSearchRoute(instance, opts.deps);
   });

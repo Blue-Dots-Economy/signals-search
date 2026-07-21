@@ -9,6 +9,7 @@ import { processEvent } from './process_event.js';
 import { runSweep, sweepOrphans } from '../ingest/sweep.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
 import { makeGuarded } from './guarded.js';
+import { WorkerHeartbeat, startWorkerHealthServer } from './health.js';
 
 async function main() {
   const cfg = loadConfig();
@@ -43,10 +44,26 @@ async function main() {
   };
   await sweep();
   const guardedSweep = makeGuarded(sweep);
-  setInterval(guardedSweep, cfg.sweep.intervalMs);
+  const sweepTimer = setInterval(guardedSweep, cfg.sweep.intervalMs);
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  // Health surface + progress heartbeat so a wedged loop is visible to k8s
+  // (readiness goes 503) instead of looking healthy forever.
+  const heartbeat = new WorkerHeartbeat(cfg.worker.heartbeatStaleMs);
+  const healthServer = startWorkerHealthServer(cfg.worker.healthPort, heartbeat);
+  heartbeat.markBooted();
+
+  // Graceful shutdown: flip the flag so the loop exits after its current
+  // XREADGROUP block (<= 5s), then the cleanup below closes everything.
+  let stopping = false;
+  const requestStop = (signal: string) => {
+    console.log('worker received', signal, '— shutting down');
+    stopping = true;
+  };
+  process.on('SIGTERM', () => requestStop('SIGTERM'));
+  process.on('SIGINT', () => requestStop('SIGINT'));
+
+  while (!stopping) {
+    heartbeat.mark();
     // Reclaim messages stranded by a dead consumer (idle >= pelMinIdleMs), then
     // read fresh ones; both flow through the same idempotent process+ack path.
     const reclaimed = await reclaimPending(
@@ -79,8 +96,17 @@ async function main() {
           console.error('processEvent failed; leaving unacked for retry', msg.id, deliveries, err);
         }
       }
+      heartbeat.mark();
     }
   }
+
+  // Loop exited via graceful stop — tear down in-flight timers, the health
+  // server, and the Redis/Postgres connections so the process can exit cleanly.
+  clearInterval(sweepTimer);
+  await new Promise<void>((resolve) => healthServer.close(() => resolve()));
+  await redis.quit().catch(() => redis.disconnect());
+  await sql.end({ timeout: 5 });
+  console.log('worker shutdown complete');
 }
 
-main().catch((err) => { console.error('worker crashed', err); process.exit(1); });
+main().then(() => process.exit(0)).catch((err) => { console.error('worker crashed', err); process.exit(1); });
