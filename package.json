@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "worker": "node dist/worker/main.js",
-    "api": "node dist/api/main.js"
+    "api": "node dist/api/main.js",
+    "spec:dump": "tsx scripts/dump-openapi.ts"
   },
   "dependencies": {
     "@fastify/swagger": "^9",

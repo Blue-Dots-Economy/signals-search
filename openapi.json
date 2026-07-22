@@ -1,0 +1,815 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Signals Search API",
+    "version": "0.1.0",
+    "description": "V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + structured search over the shared Signals database. Auth: x-api-key header."
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    },
+    "schemas": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness probe",
+        "tags": [
+          "health"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "summary": "Search items by meaning, location, and/or structured filters",
+        "tags": [
+          "search"
+        ],
+        "description": "Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, spatial, and filters. Ranking: cosine similarity (text/anchor) → distance (spatial) → recency.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "context": {
+                    "type": "object",
+                    "properties": {
+                      "version": {
+                        "type": "string",
+                        "default": "1.0.0"
+                      },
+                      "messageId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timestamp": {
+                        "type": "string"
+                      },
+                      "networkId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "domain": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "itemType": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "messageId",
+                      "networkId",
+                      "domain",
+                      "itemType"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "message": {
+                    "type": "object",
+                    "properties": {
+                      "intent": {
+                        "type": "object",
+                        "properties": {
+                          "textSearch": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "item": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "format": "uuid"
+                              }
+                            },
+                            "required": [
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "spatial": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "op": {
+                                  "type": "string",
+                                  "enum": [
+                                    "s_dwithin"
+                                  ]
+                                },
+                                "geometry": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "Point"
+                                      ]
+                                    },
+                                    "coordinates": {
+                                      "type": "array",
+                                      "minItems": 2,
+                                      "maxItems": 2,
+                                      "items": [
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "number"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "coordinates"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "distanceMeters": {
+                                  "type": "number",
+                                  "exclusiveMinimum": true,
+                                  "minimum": 0
+                                }
+                              },
+                              "required": [
+                                "op"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "maxItems": 1
+                          },
+                          "filters": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "op": {
+                                  "type": "string",
+                                  "enum": [
+                                    "eq",
+                                    "neq",
+                                    "in",
+                                    "contains",
+                                    "contains_any",
+                                    "gt",
+                                    "gte",
+                                    "lt",
+                                    "lte"
+                                  ]
+                                },
+                                "target": {
+                                  "type": "string",
+                                  "pattern": "^item_state\\.[A-Za-z0-9_]+$"
+                                },
+                                "value": {}
+                              },
+                              "required": [
+                                "op",
+                                "target"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "pagination": {
+                        "type": "object",
+                        "properties": {
+                          "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "default": 20
+                          },
+                          "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0
+                          }
+                        },
+                        "additionalProperties": false,
+                        "default": {
+                          "limit": 20,
+                          "offset": 0
+                        }
+                      }
+                    },
+                    "required": [
+                      "intent"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "context",
+                  "message"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "context": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "default": "1.0.0"
+                        },
+                        "messageId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "timestamp": {
+                          "type": "string"
+                        },
+                        "networkId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "domain": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "itemType": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "messageId",
+                        "networkId",
+                        "domain",
+                        "itemType"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "message": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "item_network": {
+                                "type": "string"
+                              },
+                              "item_domain": {
+                                "type": "string"
+                              },
+                              "item_type": {
+                                "type": "string"
+                              },
+                              "item_id": {
+                                "type": "string"
+                              },
+                              "item_state": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              },
+                              "item_locations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "lat": {
+                                      "type": "number"
+                                    },
+                                    "lng": {
+                                      "type": "number"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "lat",
+                                    "lng"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "score": {
+                                "type": "number"
+                              },
+                              "distanceMeters": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "item_network",
+                              "item_domain",
+                              "item_type",
+                              "item_id",
+                              "item_state",
+                              "item_locations"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "meta": {
+                          "type": "object",
+                          "properties": {
+                            "total": {
+                              "type": "number"
+                            },
+                            "limit": {
+                              "type": "number"
+                            },
+                            "offset": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "total",
+                            "limit",
+                            "offset"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "meta"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "context",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search/flat": {
+      "post": {
+        "summary": "Flattened search for one-level-only tool integrations (e.g. Raya)",
+        "tags": [
+          "search"
+        ],
+        "description": "Same search as POST /v1/search, but the body is a FLAT object whose keys are dot-delimited canonical paths (a numeric segment is an array index) and whose values may all be strings. Leaves are JSON-parsed to restore real types, then validated against the canonical schema. Numeric-looking filter values are parsed as numbers; send a JSON-quoted string (e.g. \"\\\"560001\\\"\") to keep one a string.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "context": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "default": "1.0.0"
+                        },
+                        "messageId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "timestamp": {
+                          "type": "string"
+                        },
+                        "networkId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "domain": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "itemType": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "messageId",
+                        "networkId",
+                        "domain",
+                        "itemType"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "message": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "item_network": {
+                                "type": "string"
+                              },
+                              "item_domain": {
+                                "type": "string"
+                              },
+                              "item_type": {
+                                "type": "string"
+                              },
+                              "item_id": {
+                                "type": "string"
+                              },
+                              "item_state": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              },
+                              "item_locations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "lat": {
+                                      "type": "number"
+                                    },
+                                    "lng": {
+                                      "type": "number"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "lat",
+                                    "lng"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "score": {
+                                "type": "number"
+                              },
+                              "distanceMeters": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "item_network",
+                              "item_domain",
+                              "item_type",
+                              "item_id",
+                              "item_state",
+                              "item_locations"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "meta": {
+                          "type": "object",
+                          "properties": {
+                            "total": {
+                              "type": "number"
+                            },
+                            "limit": {
+                              "type": "number"
+                            },
+                            "offset": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "total",
+                            "limit",
+                            "offset"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "meta"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "context",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3100",
+      "description": "Public API"
+    }
+  ],
+  "tags": [
+    {
+      "name": "search",
+      "description": "Item search & discovery"
+    },
+    {
+      "name": "health",
+      "description": "Operational probes"
+    }
+  ]
+}
