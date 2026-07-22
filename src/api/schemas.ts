@@ -94,6 +94,31 @@ export const SearchResponseSchema = z.object({
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
+// A fully-qualified reference to a single indexed item (its composite PK). Used
+// by /v1/relevance to name the two items being compared. item_id is a UUID for
+// parity with the items table and the anchor lookup in /v1/search.
+export const ItemRefSchema = z.object({
+  item_network: z.string().min(1),
+  item_domain: z.string().min(1),
+  item_type: z.string().min(1),
+  item_id: z.string().uuid(),
+});
+
+// POST /v1/relevance body: the two items whose stored embeddings are compared.
+export const RelevanceRequestSchema = z.object({
+  itemA: ItemRefSchema,
+  itemB: ItemRefSchema,
+});
+export type RelevanceRequest = z.infer<typeof RelevanceRequestSchema>;
+
+// POST /v1/relevance response: relevance as a percentage in [0, 100] derived
+// from the cosine similarity of the two items' embeddings (higher = more
+// similar). Band/confidence/reasoning are intentionally omitted for V1.
+export const RelevanceResponseSchema = z.object({
+  score: z.number(),
+});
+export type RelevanceResponse = z.infer<typeof RelevanceResponseSchema>;
+
 export const ErrorSchema = z.object({
   error: z.string(),
   message: z.string(),
