@@ -214,3 +214,47 @@ Validated in `src/config.ts` (`EnvSchema` / `loadConfig`), threaded into `ApiDep
    `dpg_scoring` as the default/fallback (companion spec). Cutover is a config flip.
 3. Follow-up issue: cross-encoder rerank mode (`method: "rerank"`), gated on the
    reranker being deployed.
+
+## 11. Implementation status & deviations (2026-07-22)
+
+The endpoint was implemented in **PR Blue-Dots-Economy/signals-search#50**
+(branch `feat/relevance-score-endpoint`) *before* this spec was shared. It was
+reviewed against this spec; the review is **request-changes**. Deviations below.
+
+### Accepted deviations (keep)
+
+- **1:1 only, not bulk.** The shipped request is `{ itemA, itemB }` → response
+  `{ score }` — a single pair, not `source` + `targets[]` → `results[]`. Accepted for
+  V1 by product decision; the bulk shape (§3–§6) is deferred to follow-up issue
+  **#51**. Note this makes the later move to bulk a **breaking** request/response
+  change, which #51 must own.
+- **Full composite-PK item refs instead of id-only.** Items are named by the full
+  `{ item_network, item_domain, item_type, item_id }` (`ItemRefSchema`), not a bare
+  `id` resolved server-side (§3). This is **better** than the spec — no lookup
+  ambiguity, and the consumer (signals-dpg) has the full key at the call site.
+  Adopted as the design of record.
+- **Score wire format is a percentage `[0,100]`, not raw cosine `[0,1]`.** The route
+  clamps negative cosine to 0 and returns `0–100` (2 dp). Combined with signals-dpg
+  dividing by 10, the end-to-end score to the UI is `cosine × 10` = the 0–10 the spec
+  intended — same outcome, different wire representation. Acceptable; documented so
+  §5/§7's "raw cosine" wording is understood as the *internal* value.
+- **`band` omitted from the response.** The consumer's UI recomputes a band from the
+  0–10 score, so the endpoint doesn't emit one (§5, §6 `band` / §8 band-threshold env
+  are therefore unused by V1). Acceptable simplification.
+- **Fail-fast `404 RELEVANCE_ITEMS_NOT_INDEXED`** when either item is missing or has a
+  NULL embedding, instead of the per-target status enum (§6). Reasonable for the 1:1
+  shape; the per-target status model returns with bulk in #51.
+
+### Required fixes (blocking — the request-changes review)
+
+These are correctness/security gaps from the spec that must be addressed before merge:
+
+1. **Authorization check missing.** `relevance_route.ts` never calls
+   `registry.isInteractionAllowed(...)` (§6 authz note, `.claude/rules/pii-and-authz.md`).
+   Must enforce the interaction matrix on the `itemA.domain → itemB.domain` pair.
+2. **No `lifecycle_status = 'live'` scope.** `computeRelevance` (`relevance_query.ts`)
+   joins `item_search a, b` with no lifecycle filter — it will score `draft`/`paused`/
+   archived rows. Must scope both sides to `live` (§4), matching `/v1/search`.
+3. **No `model_version` guard.** Cosine is computed unconditionally even across
+   differing `model_version`s (§6 `not_comparable`). Must require matching
+   `model_version` (or surface a not-comparable outcome).
