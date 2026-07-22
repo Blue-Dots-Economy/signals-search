@@ -52,6 +52,21 @@ describe('OpenAPI / served docs', () => {
     await app.close();
   });
 
+  it('documents POST /v1/relevance with apiKey security and request/response schemas', async () => {
+    const app = buildServer({ deps });
+    await app.ready();
+    const spec = app.swagger() as {
+      paths: Record<string, Record<string, { security?: unknown; requestBody?: unknown; responses?: Record<string, unknown> }>>;
+    };
+    const relevance = spec.paths['/v1/relevance']?.post;
+    expect(relevance).toBeTruthy();
+    expect(relevance.security).toEqual([{ apiKeyAuth: [] }]);
+    expect(relevance.requestBody).toBeTruthy();
+    expect(relevance.responses?.['200']).toBeTruthy();
+    expect(relevance.responses?.['404']).toBeTruthy();
+    await app.close();
+  });
+
   it('serves the spec JSON at /documentation/json', async () => {
     const app = buildServer({ deps });
     const res = await app.inject({ method: 'GET', url: '/documentation/json' });

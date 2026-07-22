@@ -87,6 +87,23 @@ Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as 
 
 The live request/response schema is also published in the generated OpenAPI at `/documentation` (spec JSON at `/documentation/json`).
 
+## Pairwise relevance — `POST /v1/relevance`
+
+Where `/v1/search` ranks a corpus against a query, `/v1/relevance` scores **two specific items against each other**. Given two item references it returns a single relevance **percentage (0–100)** — the cosine similarity of their already-stored embeddings, scaled ×100 (higher = more similar). It performs no embedding call and no writes; both items must already be indexed in `item_search`.
+
+Same auth as search (`x-api-key`). Score only — no band/confidence/reasoning.
+
+```jsonc
+// request
+{ "itemA": { "item_network": "blue_dot", "item_domain": "seeker", "item_type": "profile_1.0", "item_id": "0e0f...-uuid" },
+  "itemB": { "item_network": "blue_dot", "item_domain": "provider", "item_type": "profile_1.0", "item_id": "1a2b...-uuid" } }
+
+// response
+{ "score": 87.34 }
+```
+
+Returns `404 RELEVANCE_ITEMS_NOT_INDEXED` when either item is missing from `item_search` or has no embedding, and `400 VALIDATION_ERROR` for a malformed body.
+
 ## Scope
 
 **In V1:** local single-instance search, ingestion worker, query API, embedding abstraction, Redis caching.
