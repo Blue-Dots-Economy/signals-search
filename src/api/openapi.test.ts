@@ -52,13 +52,35 @@ describe('OpenAPI / served docs', () => {
     await app.close();
   });
 
-  it('serves the spec JSON at /documentation/json', async () => {
+  it('serves the Scalar reference UI at /api/reference when enabled', async () => {
     const app = buildServer({ deps });
-    const res = await app.inject({ method: 'GET', url: '/documentation/json' });
+    const res = await app.inject({ method: 'GET', url: '/api/reference' });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { openapi: string; paths: Record<string, unknown> };
-    expect(body.openapi).toMatch(/^3\./);
-    expect(body.paths['/v1/search']).toBeTruthy();
+    expect(res.headers['content-type']).toContain('text/html');
+    await app.close();
+  });
+
+  it('registers no docs surface when apiReference is disabled', async () => {
+    const app = buildServer({ deps, apiReference: { enabled: false } });
+    const res = await app.inject({ method: 'GET', url: '/api/reference' });
+    expect(res.statusCode).toBe(404);
+    // swagger plugin is skipped too — the decorator must not exist
+    expect((app as { swagger?: unknown }).swagger).toBeUndefined();
+    await app.close();
+  });
+
+  it('embeds the public server URL and package.json version when configured', async () => {
+    const app = buildServer({
+      deps,
+      apiReference: { enabled: true, publicBaseUrl: 'https://search.example.org' },
+    });
+    await app.ready();
+    const spec = app.swagger() as {
+      info: { version: string };
+      servers?: Array<{ url: string }>;
+    };
+    expect(spec.servers?.[0]?.url).toBe('https://search.example.org');
+    expect(spec.info.version).not.toBe('1.0.0'); // hard-coded literal is gone
     await app.close();
   });
 });

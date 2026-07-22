@@ -48,6 +48,10 @@ const EnvSchema = z.object({
   EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
   EMBEDDING_MAX_RETRIES: z.coerce.number().int().nonnegative().default(2),
   RUN_MIGRATIONS: envBool(false),
+  NODE_ENV: z.string().default('development'),
+  API_REFERENCE_ENABLED: z.enum(['true', 'false']).default('true'),
+  API_REFERENCE_FORCE: z.enum(['true', 'false']).default('false'),
+  PUBLIC_API_BASE_URL: z.string().url().optional(),
 });
 
 export type Config = {
@@ -62,6 +66,7 @@ export type Config = {
   rerank: { baseUrl?: string; model: string; defaultOn: boolean; topN: number };
   cache: { ttlSeconds: number };
   search: { defaultDistanceMeters: number };
+  apiReference: { enabled: boolean; publicBaseUrl?: string };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): Config {
@@ -78,5 +83,11 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     cache: { ttlSeconds: e.CACHE_TTL_SECONDS },
     search: { defaultDistanceMeters: e.SEARCH_DEFAULT_DISTANCE_METERS },
     runMigrations: e.RUN_MIGRATIONS,
+    apiReference: {
+      enabled:
+        e.API_REFERENCE_ENABLED === 'true' &&
+        (e.NODE_ENV !== 'production' || e.API_REFERENCE_FORCE === 'true'),
+      publicBaseUrl: e.PUBLIC_API_BASE_URL,
+    },
   };
 }
