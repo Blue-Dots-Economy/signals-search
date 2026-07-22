@@ -68,8 +68,21 @@ export function buildServer(opts: {
             'V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + ' +
             'structured search over the shared Signals database. Auth: x-api-key header.',
         },
+        // The services are self-hosted per network instance, so the "public"
+        // URL is deployment-specific; the localhost entry covers the local
+        // stack (only added when the primary entry isn't already localhost).
         ...(apiReference.publicBaseUrl
-          ? { servers: [{ url: apiReference.publicBaseUrl, description: 'Public API' }] }
+          ? {
+              servers: [
+                {
+                  url: apiReference.publicBaseUrl,
+                  description: "Your deployment's public host (set per network instance)",
+                },
+                ...(apiReference.publicBaseUrl === 'http://localhost:3100'
+                  ? []
+                  : [{ url: 'http://localhost:3100', description: 'Local development' }]),
+              ],
+            }
           : {}),
         components: {
           securitySchemes: {

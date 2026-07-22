@@ -18,7 +18,9 @@ const deps = {
 } as ApiDeps;
 
 // Public URL embedded in the published spec. Override for other deployments.
-const publicBaseUrl = process.env.PUBLIC_API_BASE_URL ?? 'http://localhost:3100';
+// Generic host by design: deployments are per network instance, so the
+// published spec advertises a substitute-your-host URL, not one pilot's domain.
+const publicBaseUrl = process.env.PUBLIC_API_BASE_URL ?? 'https://search.example.com';
 
 const app = buildServer({ deps, apiReference: { enabled: true, publicBaseUrl } });
 await app.ready();

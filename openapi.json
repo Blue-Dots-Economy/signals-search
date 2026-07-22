@@ -798,8 +798,12 @@
   },
   "servers": [
     {
+      "url": "https://search.example.com",
+      "description": "Your deployment's public host (set per network instance)"
+    },
+    {
       "url": "http://localhost:3100",
-      "description": "Public API"
+      "description": "Local development"
     }
   ],
   "tags": [
