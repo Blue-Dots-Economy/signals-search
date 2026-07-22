@@ -48,4 +48,31 @@ describe('loadConfig', () => {
   it('rejects a non-boolean flag value', () => {
     expect(() => loadConfig({ ...base, RUN_MIGRATIONS: 'maybe' })).toThrow();
   });
+
+  it('enables the served docs surface by default (non-production, nothing set)', () => {
+    const cfg = loadConfig(base);
+    expect(cfg.apiReference.enabled).toBe(true);
+  });
+
+  it('disables the served docs surface in production by default', () => {
+    const cfg = loadConfig({ ...base, NODE_ENV: 'production' });
+    expect(cfg.apiReference.enabled).toBe(false);
+  });
+
+  it('re-enables the served docs surface in production when force-flagged', () => {
+    const cfg = loadConfig({ ...base, NODE_ENV: 'production', API_REFERENCE_FORCE: 'true' });
+    expect(cfg.apiReference.enabled).toBe(true);
+  });
+
+  it('disables the served docs surface outside production when explicitly turned off', () => {
+    const cfg = loadConfig({ ...base, API_REFERENCE_ENABLED: 'false' });
+    expect(cfg.apiReference.enabled).toBe(false);
+  });
+
+  it('passes through the public base URL when configured, and leaves it undefined otherwise', () => {
+    expect(loadConfig(base).apiReference.publicBaseUrl).toBeUndefined();
+    expect(
+      loadConfig({ ...base, PUBLIC_API_BASE_URL: 'https://search.example.org' }).apiReference.publicBaseUrl,
+    ).toBe('https://search.example.org');
+  });
 });
