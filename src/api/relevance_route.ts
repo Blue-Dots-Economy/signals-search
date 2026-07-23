@@ -22,9 +22,10 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
       summary: 'Relevance score between two indexed items',
       description:
         'Computes how relevant two items are to each other as a percentage (0–100), from the ' +
-        'cosine similarity of their stored embeddings. Both items must be in the same network, ' +
-        'their domains allowed to interact (interaction matrix), and both live + indexed with ' +
-        'embeddings from the same model version. Score only — no band/confidence/reasoning.',
+        'cosine similarity of their stored embeddings. source→target (network + domain) must be ' +
+        'an allowed interaction (interaction matrix, cross-network included), and both items must ' +
+        'be live + indexed with embeddings from the same model version. Score only — no ' +
+        'band/confidence/reasoning.',
       security: [{ apiKeyAuth: [] }],
       body: RelevanceRequestSchema,
       response: {
@@ -43,26 +44,30 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
     }
 
     // Body is already validated by the Zod route schema (type provider).
-    const { itemA, itemB } = request.body;
+    const { source, target } = request.body;
 
-    // Authorization: scoring reads a second item as context, so it is gated on
-    // the interaction matrix (.claude/rules/pii-and-authz.md), mirroring the
-    // anchor path in search_route.ts. Both items must be in the same network and
-    // itemA's domain must be allowed to interact with itemB's. The domains used
-    // here are the SAME ones the PK lookup uses below, so a caller cannot spoof
-    // a domain to pass this check and still score a real row — a mismatched PK
+    // Authorization: scoring reads the target item as context, so it is gated on
+    // the interaction matrix (.claude/rules/pii-and-authz.md), like the anchor
+    // path in search_route.ts. source→target (network + domain) must match an
+    // allowed interaction — cross-network pairs included. The network/domain
+    // used here are the SAME values the PK lookup uses below, so a caller cannot
+    // spoof them to pass this check and still score a real row — a mismatched PK
     // simply yields not-found.
-    const allowed =
-      itemA.item_network === itemB.item_network &&
-      deps.registry.isInteractionAllowed(itemA.item_network, itemA.item_domain, itemB.item_domain);
+    const allowed = deps.registry.isInteractionAllowedAcross(
+      source.network, source.domain, target.network, target.domain,
+    );
     if (!allowed) {
       return reply.code(403).send({
         error: 'INTERACTION_NOT_ALLOWED',
-        message: `${itemA.item_domain} → ${itemB.item_domain} not permitted`,
+        message: `${source.network}/${source.domain} → ${target.network}/${target.domain} not permitted`,
       });
     }
 
-    const outcome = await computeRelevance(deps.sql, itemA, itemB);
+    const outcome = await computeRelevance(
+      deps.sql,
+      { item_network: source.network, item_domain: source.domain, item_type: source.type, item_id: source.id },
+      { item_network: target.network, item_domain: target.domain, item_type: target.type, item_id: target.id },
+    );
     if (outcome.status === 'not_found') {
       return reply.code(404).send({
         error: 'RELEVANCE_ITEMS_NOT_INDEXED',

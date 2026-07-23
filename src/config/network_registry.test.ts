@@ -23,6 +23,20 @@ describe('NetworkRegistry', () => {
     // (same-network) interaction must be denied — to_network must equal the network.
     expect(reg.isInteractionAllowed('purple_dot', 'seeker', 'aggregator')).toBe(false);
   });
+  it('isInteractionAllowedAcross matches a cross-network interaction (refer: purple_dot/seeker -> blue_dot/aggregator)', () => {
+    expect(reg.isInteractionAllowedAcross('purple_dot', 'seeker', 'blue_dot', 'aggregator')).toBe(true);
+  });
+  it('isInteractionAllowedAcross matches a same-network interaction (apply: purple_dot seeker -> provider)', () => {
+    expect(reg.isInteractionAllowedAcross('purple_dot', 'seeker', 'purple_dot', 'provider')).toBe(true);
+  });
+  it('isInteractionAllowedAcross denies pairs that do not match the matrix', () => {
+    // `refer` targets blue_dot/aggregator, not purple_dot/aggregator
+    expect(reg.isInteractionAllowedAcross('purple_dot', 'seeker', 'purple_dot', 'aggregator')).toBe(false);
+    // reverse direction is not defined
+    expect(reg.isInteractionAllowedAcross('purple_dot', 'provider', 'purple_dot', 'seeker')).toBe(false);
+    // right domains, wrong source network (no actions defined under blue_dot in the fixture)
+    expect(reg.isInteractionAllowedAcross('blue_dot', 'seeker', 'blue_dot', 'aggregator')).toBe(false);
+  });
   it('knows whether a domain is served', () => {
     expect(reg.hasDomain('purple_dot', 'provider')).toBe(true);
     expect(reg.hasDomain('purple_dot', 'ghost')).toBe(false);
