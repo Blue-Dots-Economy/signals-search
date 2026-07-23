@@ -91,7 +91,7 @@ The live request/response schema is also published in the generated OpenAPI at `
 
 Where `/v1/search` ranks a corpus against a query, `/v1/relevance` scores **two specific items against each other**. Given two item references it returns a single relevance **percentage (0–100)** — the cosine similarity of their already-stored embeddings, scaled ×100 (higher = more similar). It performs no embedding call and no writes; both items must already be indexed in `item_search`.
 
-Same auth as search (`x-api-key`). Score only — no band/confidence/reasoning.
+Same auth as search (`x-api-key`). Score only — no band/confidence/reasoning. Both items must be in the **same network**, their domains must be **allowed to interact** (interaction matrix, same gate as anchor search), and both must be **live** and embedded with the **same model version**.
 
 ```jsonc
 // request
@@ -102,7 +102,12 @@ Same auth as search (`x-api-key`). Score only — no band/confidence/reasoning.
 { "score": 87.34 }
 ```
 
-Returns `404 RELEVANCE_ITEMS_NOT_INDEXED` when either item is missing from `item_search` or has no embedding, and `400 VALIDATION_ERROR` for a malformed body.
+Error responses:
+
+- `400 VALIDATION_ERROR` — malformed body.
+- `403 INTERACTION_NOT_ALLOWED` — the two items are in different networks, or their domains aren't allowed to interact.
+- `404 RELEVANCE_ITEMS_NOT_INDEXED` — either item is missing, not `live`, or has no embedding.
+- `409 RELEVANCE_NOT_COMPARABLE` — the items were embedded with different model versions (e.g. mid model migration), so cosine is meaningless.
 
 ## Scope
 

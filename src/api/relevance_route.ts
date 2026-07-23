@@ -22,15 +22,18 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
       summary: 'Relevance score between two indexed items',
       description:
         'Computes how relevant two items are to each other as a percentage (0–100), from the ' +
-        'cosine similarity of their stored embeddings. Both items must already be indexed in ' +
-        'item_search. Score only — no band/confidence/reasoning.',
+        'cosine similarity of their stored embeddings. Both items must be in the same network, ' +
+        'their domains allowed to interact (interaction matrix), and both live + indexed with ' +
+        'embeddings from the same model version. Score only — no band/confidence/reasoning.',
       security: [{ apiKeyAuth: [] }],
       body: RelevanceRequestSchema,
       response: {
         200: RelevanceResponseSchema,
         400: ErrorSchema,
         401: ErrorSchema,
+        403: ErrorSchema,
         404: ErrorSchema,
+        409: ErrorSchema,
       },
     },
   }, async (request, reply) => {
@@ -41,13 +44,37 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
 
     // Body is already validated by the Zod route schema (type provider).
     const { itemA, itemB } = request.body;
-    const similarity = await computeRelevance(deps.sql, itemA, itemB);
-    if (similarity === null) {
-      return reply.code(404).send({
-        error: 'RELEVANCE_ITEMS_NOT_INDEXED',
-        message: 'both items must be indexed with an embedding to compute relevance',
+
+    // Authorization: scoring reads a second item as context, so it is gated on
+    // the interaction matrix (.claude/rules/pii-and-authz.md), mirroring the
+    // anchor path in search_route.ts. Both items must be in the same network and
+    // itemA's domain must be allowed to interact with itemB's. The domains used
+    // here are the SAME ones the PK lookup uses below, so a caller cannot spoof
+    // a domain to pass this check and still score a real row — a mismatched PK
+    // simply yields not-found.
+    const allowed =
+      itemA.item_network === itemB.item_network &&
+      deps.registry.isInteractionAllowed(itemA.item_network, itemA.item_domain, itemB.item_domain);
+    if (!allowed) {
+      return reply.code(403).send({
+        error: 'INTERACTION_NOT_ALLOWED',
+        message: `${itemA.item_domain} → ${itemB.item_domain} not permitted`,
       });
     }
-    return reply.code(200).send({ score: similarityToPercentage(similarity) });
+
+    const outcome = await computeRelevance(deps.sql, itemA, itemB);
+    if (outcome.status === 'not_found') {
+      return reply.code(404).send({
+        error: 'RELEVANCE_ITEMS_NOT_INDEXED',
+        message: 'both items must be live and indexed with an embedding to compute relevance',
+      });
+    }
+    if (outcome.status === 'not_comparable') {
+      return reply.code(409).send({
+        error: 'RELEVANCE_NOT_COMPARABLE',
+        message: 'items were embedded with different model versions and cannot be compared',
+      });
+    }
+    return reply.code(200).send({ score: similarityToPercentage(outcome.similarity) });
   });
 }

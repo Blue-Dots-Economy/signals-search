@@ -63,7 +63,9 @@ describe('OpenAPI / served docs', () => {
     expect(relevance.security).toEqual([{ apiKeyAuth: [] }]);
     expect(relevance.requestBody).toBeTruthy();
     expect(relevance.responses?.['200']).toBeTruthy();
+    expect(relevance.responses?.['403']).toBeTruthy();
     expect(relevance.responses?.['404']).toBeTruthy();
+    expect(relevance.responses?.['409']).toBeTruthy();
     await app.close();
   });
 
