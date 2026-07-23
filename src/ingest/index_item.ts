@@ -24,7 +24,15 @@ export async function indexItem(args: {
 }): Promise<IndexResult> {
   const { item, fields, embedder, repo, modelVersion } = args;
   const text = serializeItemText(item.item_state, fields);
-  const hash = contentHash(`${modelVersion}\n${text}`);
+  // The stored hash must cover EVERYTHING the row derives from — not just the
+  // vectorized text. Folding locations + lifecycle_status in means a
+  // location-only or lifecycle-only change no longer produces the identical hash
+  // (which would leave item_search.geo/lifecycle_status stale AND, because a skip
+  // never advances indexed_at, make the sweep re-select this row forever).
+  const locSig = (item.item_locations ?? [])
+    .map((l) => `${l.lat},${l.lng},${l.label ?? ''}`)
+    .join('|');
+  const hash = contentHash(`${modelVersion}\n${text}\nloc:${locSig}\nlifecycle:${item.lifecycle_status}`);
   const key = {
     item_network: item.item_network,
     item_domain: item.item_domain,
