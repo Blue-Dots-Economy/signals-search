@@ -15,6 +15,7 @@ import type { Redis } from 'ioredis';
 import type { Embedder } from '../embedding/provider.js';
 import type { NetworkRegistry } from '../config/network_registry.js';
 import { registerSearchRoute } from './search_route.js';
+import { registerRelevanceRoute } from './relevance_route.js';
 
 /**
  * Runs a dependency check with a hard timeout, collapsing any failure (rejection
@@ -104,6 +105,7 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
       },
       tags: [
         { name: 'search', description: 'Item search & discovery' },
+        { name: 'relevance', description: 'Pairwise item relevance scoring' },
         { name: 'health', description: 'Operational probes' },
       ],
     },
@@ -156,6 +158,7 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
       },
     );
     registerSearchRoute(instance, opts.deps);
+    registerRelevanceRoute(instance, opts.deps);
   });
 
   return app;
