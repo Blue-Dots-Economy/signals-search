@@ -34,6 +34,12 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: OpenAPI spec drift check
+        run: |
+          pnpm spec:dump
+          git diff --exit-code openapi.json || {
+            echo "::error::openapi.json is stale — run 'pnpm spec:dump' and commit the result"; exit 1; }
+
       # Pre-build the Postgres test image so Testcontainers' fromDockerfile build
       # hits the buildkit cache instead of a cold build (which can exceed vitest's
       # hookTimeout on a cache miss). imresamu/postgis is the multi-arch base; on
