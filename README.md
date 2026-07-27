@@ -109,6 +109,15 @@ Error responses:
 - `404 RELEVANCE_ITEMS_NOT_INDEXED` — either item is missing, not `live`, or has no embedding.
 - `409 RELEVANCE_NOT_COMPARABLE` — the items were embedded with different model versions (e.g. mid model migration), so cosine is meaningless.
 
+## Operations
+
+Both processes expose HTTP liveness/readiness probes and shut down gracefully on `SIGTERM`/`SIGINT`.
+
+- **API** (`API_PORT`, default 3100): `GET /health` (liveness) and `GET /ready` — readiness pings Postgres and Redis with a 2s timeout; returns `503 {status:"not_ready", checks:{postgres,redis}}` if either is unreachable. Graceful shutdown drains in-flight requests, then closes Redis + Postgres.
+- **Worker** (`WORKER_HEALTH_PORT`, default 3101): `GET /health` (liveness) and `GET /ready` — readiness flips to `503` if the ingest loop hasn't made progress within `WORKER_HEARTBEAT_STALE_MS` (default 30s), so a wedged sweep/consumer is visible to k8s. Graceful shutdown lets the current `XREADGROUP` block finish (≤5s), then tears down the sweep timer, health server, and connections.
+
+**Request correlation.** The API reads an inbound `x-request-id` (e.g. from Kong; length-capped at 200 chars) or generates `req-<uuid>` when absent, logs it as `reqId`, and echoes it on the response `x-request-id` header. `x-api-key`/`authorization` headers are redacted from logs.
+
 ## Scope
 
 **In V1:** local single-instance search, ingestion worker, query API, embedding abstraction, Redis caching.
@@ -129,8 +138,8 @@ pnpm install
 pnpm test        # vitest + testcontainers (Docker required; first run builds a pgvector+postgis image)
 pnpm typecheck
 pnpm build       # tsc -> dist/ (+ copies migration SQL)
-pnpm worker      # ingestion worker (DATABASE_URL, REDIS_URL, EMBEDDING_BASE_URL, NETWORK_CONFIG_PATH)
-pnpm api         # query API on API_PORT (same env + serves POST /v1/search)
+pnpm worker      # ingestion worker (DATABASE_URL, REDIS_URL, EMBEDDING_BASE_URL, NETWORK_CONFIG_PATH); also binds a health port on WORKER_HEALTH_PORT
+pnpm api         # query API on API_PORT (same env); serves POST /v1/search, /v1/search/flat, /v1/relevance and GET /health, /ready
 ```
 
 Tests use Testcontainers; ensure Docker is running. The Postgres test image (`test/docker/Dockerfile.postgres`) bundles pgvector + PostGIS. See `.env.example` for all config. Note `RUN_MIGRATIONS` defaults to **off** — the worker assumes the `item_search` schema already exists (owned by Signals-DPG in prod) and fails fast if not; set `RUN_MIGRATIONS=true` for local/dev to apply the bundled migration.
