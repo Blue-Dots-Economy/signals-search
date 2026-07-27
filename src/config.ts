@@ -37,6 +37,14 @@ const EnvSchema = z.object({
   SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(200),
   API_PORT: z.coerce.number().int().positive().default(3100),
+  // Port for the worker's lightweight health/readiness HTTP surface. The worker
+  // is a background consumer with no API, but k8s still needs to probe it —
+  // without this a wedged sweep/ingest loop looks healthy forever.
+  WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3101),
+  // Worker readiness flips to 503 if the ingest loop hasn't made progress within
+  // this window. Must exceed one XREADGROUP block (5s) with headroom so an idle
+  // (message-less) loop still counts as healthy; a true wedge exceeds it.
+  WORKER_HEARTBEAT_STALE_MS: z.coerce.number().int().positive().default(30_000),
   // Default radius (meters) for a spatial clause that omits distanceMeters.
   SEARCH_DEFAULT_DISTANCE_METERS: z.coerce.number().positive().default(30_000),
   NETWORK_CONFIG_PATH: z.string().min(1),
@@ -62,6 +70,7 @@ export type Config = {
   ingest: { stream: string; consumerGroup: string; consumerName: string; pelMinIdleMs: number; dlqStream: string; maxDeliveries: number; dlqMaxLen: number };
   sweep: { intervalMs: number; batchSize: number };
   api: { port: number };
+  worker: { healthPort: number; heartbeatStaleMs: number };
   networkConfigPath: string;
   rerank: { baseUrl?: string; model: string; defaultOn: boolean; topN: number };
   cache: { ttlSeconds: number };
@@ -78,6 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     ingest: { stream: e.INGEST_STREAM, consumerGroup: e.INGEST_CONSUMER_GROUP, consumerName: e.INGEST_CONSUMER_NAME, pelMinIdleMs: e.PEL_MIN_IDLE_MS, dlqStream: e.INGEST_DLQ_STREAM ?? `${e.INGEST_STREAM}:dlq`, maxDeliveries: e.INGEST_MAX_DELIVERIES, dlqMaxLen: e.INGEST_DLQ_MAXLEN },
     sweep: { intervalMs: e.SWEEP_INTERVAL_MS, batchSize: e.SWEEP_BATCH_SIZE },
     api: { port: e.API_PORT },
+    worker: { healthPort: e.WORKER_HEALTH_PORT, heartbeatStaleMs: e.WORKER_HEARTBEAT_STALE_MS },
     networkConfigPath: e.NETWORK_CONFIG_PATH,
     rerank: { baseUrl: e.RERANK_BASE_URL, model: e.RERANK_MODEL, defaultOn: e.RERANK_DEFAULT, topN: e.RESULT_TOPN },
     cache: { ttlSeconds: e.CACHE_TTL_SECONDS },

@@ -52,6 +52,36 @@ describe('OpenAPI / served docs', () => {
     await app.close();
   });
 
+  it('documents POST /v1/relevance with apiKey security and request/response schemas', async () => {
+    const app = buildServer({ deps });
+    await app.ready();
+    const spec = app.swagger() as {
+      paths: Record<string, Record<string, { security?: unknown; requestBody?: unknown; responses?: Record<string, unknown> }>>;
+    };
+    const relevance = spec.paths['/v1/relevance']?.post;
+    expect(relevance).toBeTruthy();
+    expect(relevance.security).toEqual([{ apiKeyAuth: [] }]);
+    expect(relevance.requestBody).toBeTruthy();
+    expect(relevance.responses?.['200']).toBeTruthy();
+    expect(relevance.responses?.['403']).toBeTruthy();
+    expect(relevance.responses?.['404']).toBeTruthy();
+    expect(relevance.responses?.['409']).toBeTruthy();
+    await app.close();
+  });
+
+  // Was "serves the spec JSON at /documentation/json" — that route is gone
+  // now that swagger-ui is replaced by Scalar (which doesn't serve a bare
+  // JSON document route), so this exercises the same OpenAPI-document
+  // validity check via the swagger() decorator instead of an HTTP route.
+  it('exposes a valid OpenAPI 3.x document via swagger()', async () => {
+    const app = buildServer({ deps });
+    await app.ready();
+    const spec = app.swagger() as { openapi: string; paths: Record<string, unknown> };
+    expect(spec.openapi).toMatch(/^3\./);
+    expect(spec.paths['/v1/search']).toBeTruthy();
+    await app.close();
+  });
+
   it('serves the Scalar reference UI at /api/reference when enabled', async () => {
     const app = buildServer({ deps });
     const res = await app.inject({ method: 'GET', url: '/api/reference' });

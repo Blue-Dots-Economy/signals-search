@@ -87,6 +87,28 @@ Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as 
 
 The live request/response schema is also published in the generated OpenAPI at `/documentation` (spec JSON at `/documentation/json`).
 
+## Pairwise relevance — `POST /v1/relevance`
+
+Where `/v1/search` ranks a corpus against a query, `/v1/relevance` scores **two specific items against each other**. Given two item references it returns a single relevance **percentage (0–100)** — the cosine similarity of their already-stored embeddings, scaled ×100 (higher = more similar). It performs no embedding call and no writes; both items must already be indexed in `item_search`.
+
+Same auth as search (`x-api-key`). Score only — no band/confidence/reasoning. The body is directional — `source` is scored **from**, `target` is scored **against** — and `source → target` (network + domain) must be an **allowed interaction** (interaction matrix, same gate as anchor search, **cross-network pairs included**). Both items must be **live** and embedded with the **same model version**.
+
+```jsonc
+// request — networks may differ (cross-network relevance is supported)
+{ "source": { "network": "purple_dot", "domain": "seeker",     "type": "profile_1.0", "id": "0e0f...-uuid" },
+  "target": { "network": "blue_dot",   "domain": "aggregator", "type": "profile_1.0", "id": "1a2b...-uuid" } }
+
+// response
+{ "score": 87.34 }
+```
+
+Error responses:
+
+- `400 VALIDATION_ERROR` — malformed body.
+- `403 INTERACTION_NOT_ALLOWED` — `source → target` (network + domain) isn't an allowed interaction.
+- `404 RELEVANCE_ITEMS_NOT_INDEXED` — either item is missing, not `live`, or has no embedding.
+- `409 RELEVANCE_NOT_COMPARABLE` — the items were embedded with different model versions (e.g. mid model migration), so cosine is meaningless.
+
 ## Scope
 
 **In V1:** local single-instance search, ingestion worker, query API, embedding abstraction, Redis caching.

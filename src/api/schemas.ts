@@ -94,6 +94,36 @@ export const SearchResponseSchema = z.object({
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
+// A fully-qualified reference to a single indexed item (its composite PK), with
+// the redundant `item_` prefix dropped since the nesting already says "item".
+// `network` lives on each ref (not hoisted) so source and target may be in
+// different networks — cross-network relevance is a supported use case, gated
+// by the cross-network interaction matrix. `id` is a UUID for parity with the
+// items table and the anchor lookup in /v1/search.
+export const RelevanceRefSchema = z.object({
+  network: z.string().min(1),
+  domain: z.string().min(1),
+  type: z.string().min(1),
+  id: z.string().uuid(),
+});
+
+// POST /v1/relevance body: the two items whose stored embeddings are compared.
+// Directional — `source` is the item scored FROM (e.g. the viewer's profile),
+// `target` the item scored AGAINST — matching the interaction matrix's from→to.
+export const RelevanceRequestSchema = z.object({
+  source: RelevanceRefSchema,
+  target: RelevanceRefSchema,
+});
+export type RelevanceRequest = z.infer<typeof RelevanceRequestSchema>;
+
+// POST /v1/relevance response: relevance as a percentage in [0, 100] derived
+// from the cosine similarity of the two items' embeddings (higher = more
+// similar). Band/confidence/reasoning are intentionally omitted for V1.
+export const RelevanceResponseSchema = z.object({
+  score: z.number(),
+});
+export type RelevanceResponse = z.infer<typeof RelevanceResponseSchema>;
+
 export const ErrorSchema = z.object({
   error: z.string(),
   message: z.string(),
