@@ -17,10 +17,16 @@ const deps = {
   defaultDistanceMeters: 30000,
 } as ApiDeps;
 
-// Public URL embedded in the published spec. Override for other deployments.
-// Generic host by design: deployments are per network instance, so the
-// published spec advertises a substitute-your-host URL, not one pilot's domain.
-const publicBaseUrl = process.env.PUBLIC_API_BASE_URL ?? 'https://search.example.com';
+// Public URL embedded in the published spec. Generic host by design:
+// deployments are per network instance, so the published spec advertises a
+// substitute-your-host URL, not one pilot's domain.
+//
+// Hard-coded on purpose (not env-driven): the committed openapi.json must be
+// deterministic across environments — if this read from process.env, CI vs.
+// local vs. any future runner could each produce a different committed spec
+// depending on what happened to be set. To change the published URL: edit
+// this constant, rerun `pnpm spec:dump`, and commit the result.
+const publicBaseUrl = 'https://search.example.com';
 
 const app = buildServer({ deps, apiReference: { enabled: true, publicBaseUrl } });
 await app.ready();
