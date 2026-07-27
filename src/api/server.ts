@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
   serializerCompiler,
@@ -14,6 +15,29 @@ import type { Redis } from 'ioredis';
 import type { Embedder } from '../embedding/provider.js';
 import type { NetworkRegistry } from '../config/network_registry.js';
 import { registerSearchRoute } from './search_route.js';
+import { registerRelevanceRoute } from './relevance_route.js';
+
+/**
+ * Runs a dependency check with a hard timeout, collapsing any failure (rejection
+ * or timeout) to `'error'`. Used by the readiness probe so a hung Postgres/Redis
+ * connection can never make the probe itself hang.
+ */
+async function probe(fn: () => Promise<unknown>, ms = 2000): Promise<'ok' | 'error'> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      fn(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), ms);
+      }),
+    ]);
+    return 'ok';
+  } catch {
+    return 'error';
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export type ApiDeps = {
   sql: Sql;
@@ -31,9 +55,26 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
     // Redact credential headers so a raw API key can never reach the logs,
     // even if a custom/error serializer ever emits request headers.
     logger: { redact: ['req.headers["x-api-key"]', 'req.headers.authorization'] },
+    // Correlation id: always run genReqId (requestIdHeader:false) so we can
+    // read AND length-cap an inbound `x-request-id` (from Kong or an upstream
+    // caller), falling back to a generated id. Logged as `reqId`.
+    requestIdHeader: false,
+    requestIdLogLabel: 'reqId',
+    genReqId: (req) => {
+      const incoming = req.headers['x-request-id'];
+      if (typeof incoming === 'string' && incoming.length > 0 && incoming.length <= 200) {
+        return incoming;
+      }
+      return `req-${randomUUID()}`;
+    },
   });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  // Echo the resolved correlation id back so callers/Kong can stitch the trace.
+  app.addHook('onRequest', async (req, reply) => {
+    void reply.header('x-request-id', req.id);
+  });
 
   // Route schemas are now Zod (so they self-document via @fastify/swagger). Map the
   // type provider's request-validation failures back to the service's stable 400
@@ -64,6 +105,7 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
       },
       tags: [
         { name: 'search', description: 'Item search & discovery' },
+        { name: 'relevance', description: 'Pairwise item relevance scoring' },
         { name: 'health', description: 'Operational probes' },
       ],
     },
@@ -86,7 +128,37 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
       },
       async () => ({ status: 'ok' }),
     );
+    instance.withTypeProvider<ZodTypeProvider>().get(
+      '/ready',
+      {
+        schema: {
+          tags: ['health'],
+          summary: 'Readiness probe — checks Postgres + Redis reachability',
+          security: [],
+          response: {
+            200: z.object({ status: z.string() }),
+            503: z.object({
+              status: z.string(),
+              checks: z.object({ postgres: z.string(), redis: z.string() }),
+            }),
+          },
+        },
+      },
+      async (_req, reply) => {
+        const [postgresStatus, redisStatus] = await Promise.all([
+          probe(() => opts.deps.sql`select 1`),
+          probe(() => opts.deps.redis.ping()),
+        ]);
+        if (postgresStatus === 'ok' && redisStatus === 'ok') {
+          return { status: 'ready' };
+        }
+        return reply
+          .code(503)
+          .send({ status: 'not_ready', checks: { postgres: postgresStatus, redis: redisStatus } });
+      },
+    );
     registerSearchRoute(instance, opts.deps);
+    registerRelevanceRoute(instance, opts.deps);
   });
 
   return app;
