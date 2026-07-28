@@ -3,7 +3,7 @@
 # deployments select the entrypoint via `command` (node dist/worker/main.js or
 # node dist/api/main.js). Network configs are NOT baked in; they are mounted at
 # runtime via a ConfigMap (NETWORK_CONFIG_PATH).
-FROM node:24-bookworm-slim AS base
+FROM node:26-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN corepack enable
 WORKDIR /app
@@ -22,7 +22,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # --- runtime ---
-FROM node:24-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
