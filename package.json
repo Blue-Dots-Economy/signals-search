@@ -19,11 +19,11 @@
   "dependencies": {
     "@fastify/swagger": "^9",
     "@scalar/fastify-api-reference": "^1.57.5",
-    "fastify": "^5.1.0",
-    "fastify-type-provider-zod": "^4.0.0",
+    "fastify": "^5.10.0",
+    "fastify-type-provider-zod": "^7.0.0",
     "ioredis": "^5.4.1",
     "postgres": "^3.4.5",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^10.13.0",
