@@ -22,7 +22,7 @@ ENV HF_HUB_ENABLE_HF_TRANSFER=1
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='BAAI/bge-m3', revision='${BGE_M3_REVISION}', cache_dir='/hf')" \
  && chmod -R a+rX /hf
 
-FROM ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
+FROM ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
 # Populate TEI's huggingface_hub_cache (/data) and run fully offline.
 COPY --from=dl /hf /data
 ENV HF_HUB_OFFLINE=1
