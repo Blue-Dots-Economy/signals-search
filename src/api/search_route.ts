@@ -131,6 +131,8 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
       items: ordered.map((r) => ({
         item_network: r.item_network, item_domain: r.item_domain, item_type: r.item_type, item_id: r.item_id,
         item_state: r.item_state, item_locations: r.item_locations ?? [],
+        item_instance_url: r.item_instance_url, item_schema_url: r.item_schema_url,
+        created_at: r.created_at, updated_at: r.updated_at, created_by: r.created_by, lifecycle_status: r.lifecycle_status,
         ...(r.score != null ? { score: Number(r.score.toFixed(4)) } : {}),
         ...(r.distanceMeters != null ? { distanceMeters: Math.round(r.distanceMeters) } : {}),
       })),
