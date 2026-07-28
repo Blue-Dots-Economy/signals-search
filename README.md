@@ -87,6 +87,37 @@ Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as 
 
 The live request/response schema is also published in the generated OpenAPI at `/documentation` (spec JSON at `/documentation/json`).
 
+## Pairwise relevance — `POST /v1/relevance`
+
+Where `/v1/search` ranks a corpus against a query, `/v1/relevance` scores **two specific items against each other**. Given two item references it returns a single relevance **percentage (0–100)** — the cosine similarity of their already-stored embeddings, scaled ×100 (higher = more similar). It performs no embedding call and no writes; both items must already be indexed in `item_search`.
+
+Same auth as search (`x-api-key`). Score only — no band/confidence/reasoning. The body is directional — `source` is scored **from**, `target` is scored **against** — and `source → target` (network + domain) must be an **allowed interaction** (interaction matrix, same gate as anchor search, **cross-network pairs included**). Both items must be **live** and embedded with the **same model version**.
+
+```jsonc
+// request — networks may differ (cross-network relevance is supported)
+{ "source": { "network": "purple_dot", "domain": "seeker",     "type": "profile_1.0", "id": "0e0f...-uuid" },
+  "target": { "network": "blue_dot",   "domain": "aggregator", "type": "profile_1.0", "id": "1a2b...-uuid" } }
+
+// response
+{ "score": 87.34 }
+```
+
+Error responses:
+
+- `400 VALIDATION_ERROR` — malformed body.
+- `403 INTERACTION_NOT_ALLOWED` — `source → target` (network + domain) isn't an allowed interaction.
+- `404 RELEVANCE_ITEMS_NOT_INDEXED` — either item is missing, not `live`, or has no embedding.
+- `409 RELEVANCE_NOT_COMPARABLE` — the items were embedded with different model versions (e.g. mid model migration), so cosine is meaningless.
+
+## Operations
+
+Both processes expose HTTP liveness/readiness probes and shut down gracefully on `SIGTERM`/`SIGINT`.
+
+- **API** (`API_PORT`, default 3100): `GET /health` (liveness) and `GET /ready` — readiness pings Postgres and Redis with a 2s timeout; returns `503 {status:"not_ready", checks:{postgres,redis}}` if either is unreachable. Graceful shutdown drains in-flight requests, then closes Redis + Postgres.
+- **Worker** (`WORKER_HEALTH_PORT`, default 3101): `GET /health` (liveness) and `GET /ready` — readiness flips to `503` if the ingest loop hasn't made progress within `WORKER_HEARTBEAT_STALE_MS` (default 30s), so a wedged sweep/consumer is visible to k8s. Graceful shutdown lets the current `XREADGROUP` block finish (≤5s), then tears down the sweep timer, health server, and connections.
+
+**Request correlation.** The API reads an inbound `x-request-id` (e.g. from Kong; length-capped at 200 chars) or generates `req-<uuid>` when absent, logs it as `reqId`, and echoes it on the response `x-request-id` header. `x-api-key`/`authorization` headers are redacted from logs.
+
 ## Scope
 
 **In V1:** local single-instance search, ingestion worker, query API, embedding abstraction, Redis caching.
@@ -107,8 +138,8 @@ pnpm install
 pnpm test        # vitest + testcontainers (Docker required; first run builds a pgvector+postgis image)
 pnpm typecheck
 pnpm build       # tsc -> dist/ (+ copies migration SQL)
-pnpm worker      # ingestion worker (DATABASE_URL, REDIS_URL, EMBEDDING_BASE_URL, NETWORK_CONFIG_PATH)
-pnpm api         # query API on API_PORT (same env + serves POST /v1/search)
+pnpm worker      # ingestion worker (DATABASE_URL, REDIS_URL, EMBEDDING_BASE_URL, NETWORK_CONFIG_PATH); also binds a health port on WORKER_HEALTH_PORT
+pnpm api         # query API on API_PORT (same env); serves POST /v1/search, /v1/search/flat, /v1/relevance and GET /health, /ready
 ```
 
 Tests use Testcontainers; ensure Docker is running. The Postgres test image (`test/docker/Dockerfile.postgres`) bundles pgvector + PostGIS. See `.env.example` for all config. Note `RUN_MIGRATIONS` defaults to **off** — the worker assumes the `item_search` schema already exists (owned by Signals-DPG in prod) and fails fast if not; set `RUN_MIGRATIONS=true` for local/dev to apply the bundled migration.

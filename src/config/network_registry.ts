@@ -11,6 +11,16 @@ export type NetworkRegistry = {
   itemSchema(network: string, domain: string, type: string): ItemSchema | undefined;
   vectorizeFields(network: string, domain: string, type: string): VectorizeField[];
   isInteractionAllowed(network: string, fromDomain: string, toDomain: string): boolean;
+  // Cross-network variant: matches an interaction (defined in the SOURCE
+  // network's actions) whose from/to network AND domain all match. The
+  // same-network case is just fromNetwork === toNetwork. Used by /v1/relevance,
+  // which — unlike anchor search — may compare items in two different networks.
+  isInteractionAllowedAcross(
+    fromNetwork: string,
+    fromDomain: string,
+    toNetwork: string,
+    toDomain: string,
+  ): boolean;
 };
 
 async function readConfigs(path: string): Promise<NetworkConfig[]> {
@@ -37,6 +47,18 @@ export async function loadNetworkRegistry(path: string): Promise<NetworkRegistry
       for (const a of Object.values(actions)) {
         for (const it of a.interactions ?? []) {
           if (it.from_network === n && it.to_network === n && it.from_domain === from && it.to_domain === to) return true;
+        }
+      }
+      return false;
+    },
+    isInteractionAllowedAcross(fromNetwork, fromDomain, toNetwork, toDomain) {
+      const actions = byId.get(fromNetwork)?.actions ?? {};
+      for (const a of Object.values(actions)) {
+        for (const it of a.interactions ?? []) {
+          if (
+            it.from_network === fromNetwork && it.from_domain === fromDomain &&
+            it.to_network === toNetwork && it.to_domain === toDomain
+          ) return true;
         }
       }
       return false;
