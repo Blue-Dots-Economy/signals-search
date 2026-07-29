@@ -14,6 +14,8 @@ export type SearchParams = {
 export type SearchRow = {
   item_network: string; item_domain: string; item_type: string; item_id: string;
   item_state: Record<string, unknown>; item_locations: { lat: number; lng: number; label?: string }[];
+  item_instance_url: string | null; item_schema_url: string | null;
+  created_at: string; updated_at: string; created_by: string | null; lifecycle_status: string;
   score?: number; distanceMeters?: number;
 };
 
@@ -100,10 +102,14 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
   const raw = await sql<{
     item_network: string; item_domain: string; item_type: string; item_id: string;
     item_state: Record<string, unknown>; item_locations: unknown;
+    item_instance_url: string | null; item_schema_url: string | null;
+    created_at: Date; updated_at: Date; created_by: string | null; lifecycle_status: string;
     score: string | number | null; distanceMeters: string | number | null;
   }[]>`
     SELECT s.item_network, s.item_domain, s.item_type, s.item_id::text AS item_id,
            i.item_state, i.item_locations,
+           i.item_instance_url, i.item_schema_url,
+           i.created_at, i.updated_at, i.created_by, i.lifecycle_status,
            ${scoreSel} AS score,
            ${distExpr} AS "distanceMeters"
     FROM item_search s
@@ -119,6 +125,15 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
     item_id: r.item_id,
     item_state: r.item_state,
     item_locations: r.item_locations as { lat: number; lng: number; label?: string }[],
+    item_instance_url: r.item_instance_url,
+    item_schema_url: r.item_schema_url,
+    // postgres.js returns timestamptz as Date; serialize to ISO strings so the
+    // JSON response (and ItemResultSchema, which declares these as z.string())
+    // carries a stable, timezone-unambiguous representation.
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+    created_by: r.created_by,
+    lifecycle_status: r.lifecycle_status,
     score: r.score !== null && r.score !== undefined ? Number(r.score) : undefined,
     distanceMeters: r.distanceMeters !== null && r.distanceMeters !== undefined ? Number(r.distanceMeters) : undefined,
   }));

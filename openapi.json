@@ -403,6 +403,27 @@
                                   "additionalProperties": false
                                 }
                               },
+                              "item_instance_url": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "item_schema_url": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "created_at": {
+                                "type": "string"
+                              },
+                              "updated_at": {
+                                "type": "string"
+                              },
+                              "created_by": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "lifecycle_status": {
+                                "type": "string"
+                              },
                               "score": {
                                 "type": "number"
                               },
@@ -416,7 +437,13 @@
                               "item_type",
                               "item_id",
                               "item_state",
-                              "item_locations"
+                              "item_locations",
+                              "item_instance_url",
+                              "item_schema_url",
+                              "created_at",
+                              "updated_at",
+                              "created_by",
+                              "lifecycle_status"
                             ],
                             "additionalProperties": false
                           }
@@ -688,6 +715,27 @@
                                   "additionalProperties": false
                                 }
                               },
+                              "item_instance_url": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "item_schema_url": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "created_at": {
+                                "type": "string"
+                              },
+                              "updated_at": {
+                                "type": "string"
+                              },
+                              "created_by": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "lifecycle_status": {
+                                "type": "string"
+                              },
                               "score": {
                                 "type": "number"
                               },
@@ -701,7 +749,13 @@
                               "item_type",
                               "item_id",
                               "item_state",
-                              "item_locations"
+                              "item_locations",
+                              "item_instance_url",
+                              "item_schema_url",
+                              "created_at",
+                              "updated_at",
+                              "created_by",
+                              "lifecycle_status"
                             ],
                             "additionalProperties": false
                           }

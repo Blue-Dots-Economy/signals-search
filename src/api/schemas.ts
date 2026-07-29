@@ -81,6 +81,12 @@ export const ItemResultSchema = z.object({
   item_id: z.string(),
   item_state: z.record(z.string(), z.unknown()),
   item_locations: z.array(z.object({ lat: z.number(), lng: z.number(), label: z.string().optional() })),
+  item_instance_url: z.string().nullable(),
+  item_schema_url: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  created_by: z.string().nullable(),
+  lifecycle_status: z.string(),
   score: z.number().optional(),
   distanceMeters: z.number().optional(),
 });

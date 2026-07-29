@@ -23,10 +23,13 @@ beforeAll(async () => {
     item_network text, item_domain text, item_type text, item_id uuid,
     item_state jsonb NOT NULL DEFAULT '{}', item_locations jsonb NOT NULL DEFAULT '[]',
     lifecycle_status text NOT NULL DEFAULT 'live',
+    item_instance_url text, item_schema_url text,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    created_by text,
     PRIMARY KEY (item_network, item_domain, item_type, item_id))`;
-  await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations,lifecycle_status) VALUES
-    (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","services_offered":["Assistive Devices","Training"]}','[{"lat":12.93,"lng":77.62}]','live'),
-    (${base.item_network},${base.item_domain},${base.item_type},${B},'{"provider_category":"Private","services_offered":["Counselling"]}','[{"lat":19.07,"lng":72.87}]','live')`;
+  await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations,lifecycle_status,item_instance_url,item_schema_url,created_at,updated_at,created_by) VALUES
+    (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","services_offered":["Assistive Devices","Training"]}','[{"lat":12.93,"lng":77.62}]','live','https://a.instance.example/','https://schema.example/profile.json','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z','user-a'),
+    (${base.item_network},${base.item_domain},${base.item_type},${B},'{"provider_category":"Private","services_offered":["Counselling"]}','[{"lat":19.07,"lng":72.87}]','live',NULL,'https://schema.example/profile.json','2026-01-03T00:00:00Z','2026-01-04T00:00:00Z',NULL)`;
   const repo = new ItemSearchRepo(sql, N);
   await repo.upsert({ ...base, item_id: A, embedding: vec(1), locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'a' });
   await repo.upsert({ ...base, item_id: B, embedding: vec(0), locations: [{ lat: 19.07, lng: 72.87 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'b' });
@@ -100,5 +103,19 @@ describe('searchItems', () => {
   it('ranks by distance when no query vector', async () => {
     const { rows } = await searchItems(sql, { ...base, filters: [], limit: 10, offset: 0, spatial: { lat: 12.93, lng: 77.62, distanceMeters: 5_000_000 } });
     expect(rows[0].item_id).toBe(A);
+  });
+  it('returns the new item metadata fields (instance/schema urls, timestamps, creator, lifecycle)', async () => {
+    const { rows } = await searchItems(sql, { ...base, queryVector: vec(1), filters: [], limit: 10, offset: 0 });
+    const a = rows.find((r) => r.item_id === A)!;
+    const b = rows.find((r) => r.item_id === B)!;
+    expect(a.item_instance_url).toBe('https://a.instance.example/');
+    expect(a.item_schema_url).toBe('https://schema.example/profile.json');
+    expect(a.created_by).toBe('user-a');
+    expect(a.lifecycle_status).toBe('live');
+    expect(a.created_at).toBe('2026-01-01T00:00:00.000Z');
+    expect(a.updated_at).toBe('2026-01-02T00:00:00.000Z');
+    // B has a null item_instance_url and created_by — nullable-field case.
+    expect(b.item_instance_url).toBeNull();
+    expect(b.created_by).toBeNull();
   });
 });

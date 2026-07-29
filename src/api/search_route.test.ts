@@ -23,8 +23,8 @@ const noRedis = { get: async () => null, set: async () => 'OK' } as any;
 
 beforeAll(async () => {
   pg = await startPostgres(); const url = pg.getConnectionUri(); await runMigrations(url); sql = sqlClient(url);
-  await sql`CREATE TABLE items (item_network text,item_domain text,item_type text,item_id uuid,item_state jsonb NOT NULL DEFAULT '{}',item_locations jsonb NOT NULL DEFAULT '[]',lifecycle_status text NOT NULL DEFAULT 'live',PRIMARY KEY (item_network,item_domain,item_type,item_id))`;
-  await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","service_details":"speech therapy"}','[{"lat":12.93,"lng":77.62}]')`;
+  await sql`CREATE TABLE items (item_network text,item_domain text,item_type text,item_id uuid,item_state jsonb NOT NULL DEFAULT '{}',item_locations jsonb NOT NULL DEFAULT '[]',lifecycle_status text NOT NULL DEFAULT 'live',item_instance_url text,item_schema_url text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),created_by text,PRIMARY KEY (item_network,item_domain,item_type,item_id))`;
+  await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations,item_instance_url,item_schema_url,created_at,updated_at,created_by) VALUES (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","service_details":"speech therapy"}','[{"lat":12.93,"lng":77.62}]',NULL,'https://schema.example/profile.json','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z','user-a')`;
   // Seeker anchors: S1 co-located with A; S2 has no location.
   await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES
     (${seekerBase.item_network},${seekerBase.item_domain},${seekerBase.item_type},${S1},'{"needs":"speech therapy"}','[{"lat":12.93,"lng":77.62}]'),
@@ -62,6 +62,14 @@ describe('POST /v1/search', () => {
     expect(j.message.items[0].item_id).toBe(A);
     expect(j.message.items[0].item_state.provider_category).toBe('NGO / Trust');
     expect(j.message.meta.total).toBe(1);
+    // New item metadata fields (#full-item-fields): instance/schema urls, timestamps,
+    // creator, lifecycle. A's item_instance_url is null — nullable-field case.
+    expect(j.message.items[0].item_instance_url).toBeNull();
+    expect(j.message.items[0].item_schema_url).toBe('https://schema.example/profile.json');
+    expect(j.message.items[0].created_by).toBe('user-a');
+    expect(j.message.items[0].lifecycle_status).toBe('live');
+    expect(j.message.items[0].created_at).toBe('2026-01-01T00:00:00.000Z');
+    expect(j.message.items[0].updated_at).toBe('2026-01-02T00:00:00.000Z');
   });
 });
 
