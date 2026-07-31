@@ -13,11 +13,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "worker": "node dist/worker/main.js",
-    "api": "node dist/api/main.js"
+    "api": "node dist/api/main.js",
+    "spec:dump": "tsx scripts/dump-openapi.ts"
   },
   "dependencies": {
     "@fastify/swagger": "^9",
-    "@fastify/swagger-ui": "^5",
+    "@scalar/fastify-api-reference": "^1.57.5",
     "fastify": "^5.1.0",
     "fastify-type-provider-zod": "^4.0.0",
     "ioredis": "^5.4.1",
@@ -28,6 +29,7 @@
     "@testcontainers/postgresql": "^10.13.0",
     "@types/node": "^24.0.0",
     "testcontainers": "^10.13.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

@@ -8,7 +8,8 @@ import {
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import fastifySwagger from '@fastify/swagger';
-import fastifySwaggerUi from '@fastify/swagger-ui';
+import scalarApiReference from '@scalar/fastify-api-reference';
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 import type { Sql } from 'postgres';
 import type { Redis } from 'ioredis';
@@ -39,6 +40,8 @@ async function probe(fn: () => Promise<unknown>, ms = 2000): Promise<'ok' | 'err
   }
 }
 
+const pkg = createRequire(import.meta.url)('../../package.json') as { version: string };
+
 export type ApiDeps = {
   sql: Sql;
   redis: Redis;
@@ -50,7 +53,13 @@ export type ApiDeps = {
   defaultDistanceMeters: number;
 };
 
-export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
+export type ApiReferenceOptions = { enabled: boolean; publicBaseUrl?: string };
+
+export function buildServer(opts: {
+  deps: ApiDeps;
+  apiReference?: ApiReferenceOptions;
+}): FastifyInstance {
+  const apiReference = opts.apiReference ?? { enabled: true };
   const app = Fastify({
     // Redact credential headers so a raw API key can never reach the logs,
     // even if a custom/error serializer ever emits request headers.
@@ -88,30 +97,64 @@ export function buildServer(opts: { deps: ApiDeps }): FastifyInstance {
 
   // OpenAPI generation from the route Zod schemas (must be registered before the
   // routes so its onRoute hook captures them — hence routes live in the deferred
-  // plugin below). Served as a spec at /documentation/json and a UI at /documentation.
-  app.register(fastifySwagger, {
-    openapi: {
-      info: {
-        title: 'Signals Search API',
-        version: '1.0.0',
-        description:
-          'V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + ' +
-          'structured search over the shared Signals database. Auth: x-api-key header.',
-      },
-      components: {
-        securitySchemes: {
-          apiKeyAuth: { type: 'apiKey', in: 'header', name: 'x-api-key' },
+  // plugin below). Docs surface is env-gated and secure-by-default; the
+  // always-available reference is the bluedots-docs site.
+  if (apiReference.enabled) {
+    app.register(fastifySwagger, {
+      openapi: {
+        info: {
+          title: 'Signals Search API',
+          version: pkg.version,
+          description:
+            'V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + ' +
+            'structured search over the shared Signals database. Auth: x-api-key header.',
         },
+        // The services are self-hosted per network instance, so the "public"
+        // URL is deployment-specific; the localhost entry covers the local
+        // stack (only added when the primary entry isn't already localhost).
+        ...(apiReference.publicBaseUrl
+          ? {
+              servers: [
+                {
+                  url: apiReference.publicBaseUrl,
+                  description: "Your deployment's public host (set per network instance)",
+                },
+                ...(apiReference.publicBaseUrl === 'http://localhost:3100'
+                  ? []
+                  : [{ url: 'http://localhost:3100', description: 'Local development' }]),
+              ],
+            }
+          : {}),
+        components: {
+          securitySchemes: {
+            apiKeyAuth: { type: 'apiKey', in: 'header', name: 'x-api-key' },
+          },
+        },
+        tags: [
+          { name: 'search', description: 'Item search & discovery' },
+          { name: 'relevance', description: 'Pairwise item relevance scoring' },
+          { name: 'health', description: 'Operational probes' },
+        ],
       },
-      tags: [
-        { name: 'search', description: 'Item search & discovery' },
-        { name: 'relevance', description: 'Pairwise item relevance scoring' },
-        { name: 'health', description: 'Operational probes' },
-      ],
-    },
-    transform: jsonSchemaTransform,
-  });
-  app.register(fastifySwaggerUi, { routePrefix: '/documentation' });
+      transform: jsonSchemaTransform,
+    });
+    // @scalar/fastify-api-reference always registers the bare route prefix
+    // (/api/reference) as an unconditional 301 to the trailing-slash form —
+    // fine for browsers, but it means the canonical URL never itself 200s.
+    // onRoute fires synchronously as each route is declared, so this rewrites
+    // that one handler (in place, no duplicate route) to serve the real page
+    // instead of redirecting to it.
+    app.addHook('onRoute', (routeOptions) => {
+      if (routeOptions.method === 'GET' && routeOptions.url === '/api/reference') {
+        routeOptions.handler = async (req, reply) => {
+          const res = await app.inject({ method: 'GET', url: '/api/reference/', headers: req.headers });
+          reply.code(res.statusCode).headers(res.headers);
+          return reply.send(res.rawPayload);
+        };
+      }
+    });
+    app.register(scalarApiReference, { routePrefix: '/api/reference' });
+  }
 
   // Routes in a deferred plugin so they register AFTER the swagger plugin's onRoute
   // hook is in place (otherwise they wouldn't appear in the generated spec).

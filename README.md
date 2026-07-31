@@ -40,6 +40,7 @@ Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──
 - **Vectorize at write, rank at read.** Vectors are precomputed asynchronously; only the query is embedded at request time. No pairwise scores are stored.
 - **Similarity runs in Postgres** (pgvector HNSW + cosine) — no in-memory/FAISS layer.
 - **PII-safe.** Only public (non-`private`) attributes are vectorized; `item_private_state` is never decrypted for embedding; results return masked state.
+- **Full item in each result (#87).** A hit returns the whole item row — `item_id` + masked `item_state` plus `item_instance_url`, `item_schema_url`, `created_at`/`updated_at`, `created_by`, and `lifecycle_status` — so callers don't need a follow-up fetch to hydrate a result.
 - **Live-only discovery.** Only `lifecycle_status = 'live'` items are returned.
 - **Authenticated.** `/v1/search` requires an API key, validated against Signals' existing key store.
 
