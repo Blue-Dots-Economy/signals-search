@@ -14,7 +14,11 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 so the SonarCloud scan below can attribute new code to
+      # the right commits (a shallow clone leaves it blind to history).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
         with:
@@ -47,8 +51,17 @@ jobs:
       - name: Pre-build test Postgres image (pgvector + postgis)
         run: docker build -t signals-search-pg-test test/docker -f test/docker/Dockerfile.postgres
 
-      - name: Test
-        run: pnpm test
+      # --coverage rather than a second `pnpm test` run: the suite spins up
+      # Testcontainers, so running it twice to produce lcov would roughly double
+      # CI time. There are no coverage thresholds, so this cannot fail the build
+      # for coverage reasons — only for real test failures, same as before.
+      - name: Test (with coverage)
+        run: pnpm test:coverage
+
+      - name: SonarCloud scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # Publish the :develop image only after build-and-test passes, on a develop
   # push. Gating publish inside the CI run (rather than a separate push-triggered
