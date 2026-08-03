@@ -58,8 +58,13 @@ jobs:
       - name: Test (with coverage)
         run: pnpm test:coverage
 
+      # Non-blocking on purpose: publish-image depends on this job, so a
+      # SonarCloud outage (or an expired token) must not stop a green build from
+      # publishing the :develop image. Scan problems surface as a failed step in
+      # the run log and as SonarCloud's own commit check, not as a red CI.
       - name: SonarCloud scan
         uses: SonarSource/sonarqube-scan-action@v6
+        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
