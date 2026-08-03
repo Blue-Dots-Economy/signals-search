@@ -13,6 +13,7 @@ async function main() {
   const registry = await loadNetworkRegistry(cfg.networkConfigPath);
   const app = buildServer({
     deps: { sql, redis, embedder, registry, rerank: cfg.rerank, cacheTtlSeconds: cfg.cache.ttlSeconds, embeddingDim: cfg.embedding.dim, defaultDistanceMeters: cfg.search.defaultDistanceMeters },
+    apiReference: cfg.apiReference,
   });
 
   // Graceful shutdown: drain the HTTP server, then close the Redis and Postgres
