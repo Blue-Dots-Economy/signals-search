@@ -11,7 +11,11 @@ updates:
       day: "monday"
       time: "03:00"
       timezone: "UTC"
-    open-pull-requests-limit: 5
+    # The limit counts open *version-update* PRs. Grouped updates plus a few
+    # singletons can sit right at 5 and silently block any further npm PR from
+    # being raised (observed in aggregator-dpg on 2026-08-04). 10 leaves headroom
+    # without becoming a flood.
+    open-pull-requests-limit: 10
     labels:
       - "dependencies"
     commit-message:
