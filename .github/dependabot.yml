@@ -31,6 +31,13 @@ updates:
       # vitest 4 needs vite 6 in lockstep — hold the major.
       - dependency-name: "vitest"
         update-types: ["version-update:semver-major"]
+      # @types/node must track the Node runtime major, which is 24 everywhere
+      # here (engines, CI node-version, and both Dockerfile stages). Types ahead
+      # of the runtime let code typecheck against APIs that do not exist at run
+      # time — #94 (24 -> 25) passed CI only because no test happens to touch a
+      # 25-only API. Lift this when the base image and `engines` move to 25.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions — keeps CI workflow action versions current
   - package-ecosystem: "github-actions"
