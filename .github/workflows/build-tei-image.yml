@@ -28,6 +28,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # Trivy image scan uploads SARIF to code-scanning
     steps:
       - uses: actions/checkout@v7
 
@@ -41,6 +42,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v7
+        id: build
         with:
           context: docker/tei-bge-m3
           push: ${{ github.event_name != 'pull_request' }}
@@ -52,3 +54,31 @@ jobs:
           tags: |
             ghcr.io/blue-dots-economy/tei-bge-m3:cpu-1.7-bge-m3
             ghcr.io/blue-dots-economy/tei-bge-m3:sha-${{ github.sha }}
+
+      # Image scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300).
+      # This image matters more than most: it is a third-party HuggingFace TEI base
+      # with model weights baked in, so it is the least-inspected supply-chain
+      # surface in the estate and nothing in package.json describes its contents.
+      #
+      # Scanned by digest, not by tag: buildx pushes straight to the registry
+      # without loading into the local docker image store, so the action's
+      # `imageid` output is not resolvable by Trivy. The digest guard also means the
+      # PR path — which builds WITHOUT pushing, so there is no digest and nothing in
+      # any registry to pull — skips cleanly instead of failing.
+      - name: Trivy image scan
+        if: steps.build.outputs.digest != ''
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ghcr.io/blue-dots-economy/tei-bge-m3@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"   # Phase A: report-only, never fails the build
+
+      - name: Upload Trivy image SARIF
+        if: always() && steps.build.outputs.digest != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image-tei-bge-m3
