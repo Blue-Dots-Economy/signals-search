@@ -58,4 +58,3 @@ jobs:
       language: ts
       node-version: "24"   # matches engines.node (>=24)
       block: false
-    secrets: inherit
