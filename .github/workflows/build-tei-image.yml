@@ -60,13 +60,18 @@ jobs:
       # with model weights baked in, so it is the least-inspected supply-chain
       # surface in the estate and nothing in package.json describes its contents.
       #
-      # Scanned by digest, not by tag: buildx pushes straight to the registry
-      # without loading into the local docker image store, so the action's
-      # `imageid` output is not resolvable by Trivy. The digest guard also means the
-      # PR path — which builds WITHOUT pushing, so there is no digest and nothing in
-      # any registry to pull — skips cleanly instead of failing.
+      # Scanned by digest rather than by the mutable `cpu-1.7-bge-m3` tag, so each
+      # result is tied to the artifact built in that run.
+      #
+      # Gated on the EVENT, not on `steps.build.outputs.digest != ''`. A digest guard
+      # looks equivalent but is not: this job has no setup-buildx-action, so it uses
+      # the default docker driver, which populates the `digest` output from the
+      # locally-built image even when `push: false`. Trivy then resolves a digest for
+      # an image that exists in no registry and fails with MANIFEST_UNKNOWN. The
+      # event is the same condition that decides `push:` above, so it is the honest
+      # one to gate on.
       - name: Trivy image scan
-        if: steps.build.outputs.digest != ''
+        if: github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
@@ -77,7 +82,7 @@ jobs:
           exit-code: "0"   # Phase A: report-only, never fails the build
 
       - name: Upload Trivy image SARIF
-        if: always() && steps.build.outputs.digest != ''
+        if: always() && github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
