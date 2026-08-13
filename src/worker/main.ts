@@ -5,6 +5,7 @@ import { runMigrations, assertSchemaReady } from '../db/migrate.js';
 import { ItemSearchRepo, ITEM_SEARCH_VECTOR_DIM } from '../db/item_search_repo.js';
 import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
 import { ensureConsumerGroup, readBatch, ackMessages, reclaimPending, getDeliveryCount, parkToDlq } from '../ingest/stream_consumer.js';
+import { composeModelVersion } from '../ingest/model_version.js';
 import { processEvent } from './process_event.js';
 import { runSweep, sweepOrphans } from '../ingest/sweep.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
@@ -23,7 +24,11 @@ async function main() {
   const redis = new Redis(cfg.redisUrl);
   const repo = new ItemSearchRepo(sql, cfg.embedding.dim);
   const embedder = new OpenAiCompatibleEmbedder(cfg.embedding);
-  const modelVersion = `${cfg.embedding.model}@${cfg.embedding.dim}`;
+  const modelVersion = composeModelVersion(
+    cfg.embedding.model,
+    cfg.embedding.dim,
+    cfg.embedding.servingVersion,
+  );
   const registry = await loadNetworkRegistry(cfg.networkConfigPath);
   const fieldsFor = (n: string, d: string, t: string) => registry.vectorizeFields(n, d, t);
 

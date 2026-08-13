@@ -119,6 +119,8 @@ Both processes expose HTTP liveness/readiness probes and shut down gracefully on
 
 **Request correlation.** The API reads an inbound `x-request-id` (e.g. from Kong; length-capped at 200 chars) or generates `req-<uuid>` when absent, logs it as `reqId`, and echoes it on the response `x-request-id` header. `x-api-key`/`authorization` headers are redacted from logs.
 
+**Embedding model version.** `EMBEDDING_SERVING_VERSION` (optional) appends a serving tag to `model_version` (`<model>@<dim>` + tag). It is **empty by default** — the value is byte-identical to the historic `<model>@<dim>`, so every stored content hash still matches and nothing re-embeds. Set it (e.g. `tei-1.9`) as part of a deliberate TEI serving-stack upgrade: because `model_version` feeds the ingest content hash, changing it makes the sweep **re-embed the whole corpus** on the next deploy, and it makes `POST /v1/relevance` return `409 RELEVANCE_NOT_COMPARABLE` across generations rather than silently scoring a mixed index.
+
 ## Scope
 
 **In V1:** local single-instance search, ingestion worker, query API, embedding abstraction, Redis caching.

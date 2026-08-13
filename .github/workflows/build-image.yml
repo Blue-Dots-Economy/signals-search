@@ -15,6 +15,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # Trivy image scan uploads SARIF to code-scanning
     steps:
       - uses: actions/checkout@v7
 
@@ -37,6 +38,7 @@ jobs:
             type=sha
 
       - uses: docker/build-push-action@v7
+        id: build
         with:
           context: .
           push: true
@@ -44,3 +46,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Image scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300).
+      # Scans the OS + system packages baked into the shipped artifact, which the
+      # source/lockfile scan in security.yml structurally cannot see (an outdated
+      # base-image library appears in no package.json).
+      #
+      # Scanned by digest, not by tag: buildx pushes straight to the registry
+      # without loading into the local docker image store, so the action's
+      # `imageid` output is not resolvable by Trivy. The digest also pins the exact
+      # artifact even if `:develop` is later moved. Registry auth comes from the
+      # docker/login-action above, which Trivy reads via ~/.docker/config.json.
+      - name: Trivy image scan
+        if: steps.build.outputs.digest != ''
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ghcr.io/blue-dots-economy/signals-search@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"   # Phase A: report-only, never fails the build
+
+      - name: Upload Trivy image SARIF
+        if: always() && steps.build.outputs.digest != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image-app
