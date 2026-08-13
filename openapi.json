@@ -206,10 +206,8 @@
                                     },
                                     "coordinates": {
                                       "type": "array",
-                                      "minItems": 2,
-                                      "maxItems": 2,
                                       "items": {
-                                        "oneOf": [
+                                        "anyOf": [
                                           {
                                             "type": "number"
                                           },
@@ -217,7 +215,9 @@
                                             "type": "number"
                                           }
                                         ]
-                                      }
+                                      },
+                                      "minItems": 2,
+                                      "maxItems": 2
                                     }
                                   },
                                   "required": [
@@ -227,8 +227,8 @@
                                 },
                                 "distanceMeters": {
                                   "type": "number",
-                                  "exclusiveMinimum": true,
-                                  "minimum": 0
+                                  "minimum": 0,
+                                  "exclusiveMinimum": true
                                 }
                               },
                               "required": [
@@ -401,30 +401,12 @@
                                 }
                               },
                               "item_instance_url": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "nullable": true,
-                                    "enum": [
-                                      null
-                                    ]
-                                  }
-                                ]
+                                "nullable": true,
+                                "type": "string"
                               },
                               "item_schema_url": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "nullable": true,
-                                    "enum": [
-                                      null
-                                    ]
-                                  }
-                                ]
+                                "nullable": true,
+                                "type": "string"
                               },
                               "created_at": {
                                 "type": "string"
@@ -433,17 +415,8 @@
                                 "type": "string"
                               },
                               "created_by": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "nullable": true,
-                                    "enum": [
-                                      null
-                                    ]
-                                  }
-                                ]
+                                "nullable": true,
+                                "type": "string"
                               },
                               "lifecycle_status": {
                                 "type": "string"
@@ -741,30 +714,12 @@
                                 }
                               },
                               "item_instance_url": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "nullable": true,
-                                    "enum": [
-                                      null
-                                    ]
-                                  }
-                                ]
+                                "nullable": true,
+                                "type": "string"
                               },
                               "item_schema_url": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "nullable": true,
-                                    "enum": [
-                                      null
-                                    ]
-                                  }
-                                ]
+                                "nullable": true,
+                                "type": "string"
                               },
                               "created_at": {
                                 "type": "string"
@@ -773,17 +728,8 @@
                                 "type": "string"
                               },
                               "created_by": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "nullable": true,
-                                    "enum": [
-                                      null
-                                    ]
-                                  }
-                                ]
+                                "nullable": true,
+                                "type": "string"
                               },
                               "lifecycle_status": {
                                 "type": "string"
