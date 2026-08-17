@@ -13,12 +13,19 @@ export async function runSweep(args: {
   batchSize: number;
 }): Promise<number> {
   const { sql, repo, embedder, fieldsFor, modelVersion, batchSize } = args;
+  // Staleness compares the source row's version against the version we last
+  // indexed — NOT against when we wrote it (#122). `indexed_at` is stamped after
+  // the embed round trip, so an update committed inside that window carries an
+  // earlier timestamp than the stale write it should have invalidated and would
+  // never be re-selected. COALESCE keeps rows indexed before `source_updated_at`
+  // existed behaving as they did.
   const rows = await sql<SourceItem[]>`
     SELECT i.item_network, i.item_domain, i.item_type, i.item_id,
-           i.item_state, i.item_locations, i.lifecycle_status
+           i.item_state, i.item_locations, i.lifecycle_status,
+           extract(epoch FROM i.updated_at)::text AS updated_at_epoch
     FROM items i
     LEFT JOIN item_search s USING (item_network, item_domain, item_type, item_id)
-    WHERE s.item_id IS NULL OR i.updated_at > s.indexed_at
+    WHERE s.item_id IS NULL OR i.updated_at > COALESCE(s.source_updated_at, s.indexed_at)
     ORDER BY i.updated_at ASC
     LIMIT ${batchSize}`;
 

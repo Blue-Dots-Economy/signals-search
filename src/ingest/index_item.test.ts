@@ -27,6 +27,7 @@ const item = {
   item_state: { service_details: 'speech therapy' },
   item_locations: [{ lat: 12.93, lng: 77.62 }],
   lifecycle_status: 'live',
+  updated_at_epoch: '1700000000',
 };
 
 describe('indexItem', () => {
@@ -57,6 +58,7 @@ describe('indexItem', () => {
       item_state: { provider_category: 'NGO' }, // `fields` is [service_details], absent here
       item_locations: [{ lat: 12.93, lng: 77.62 }],
       lifecycle_status: 'live',
+      updated_at_epoch: '1700000000',
     };
     const res = await indexItem({ item: emptyContentItem, fields, embedder: countingEmbedder, repo, modelVersion: 'm@1024' });
     expect(res.action).toBe('indexed');
