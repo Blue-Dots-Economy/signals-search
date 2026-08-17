@@ -16,5 +16,17 @@
 -- instead of clocks, so commit timing cannot fool it. `indexed_at` keeps its own
 -- meaning (when the write happened) for the recency sort and freshness monitoring.
 -- NULL = indexed before this column existed; the sweep COALESCEs to `indexed_at`.
+--
+-- ONE-TIME REPAIR for rows already corrupted before the fix (they are NOT
+-- self-healed — `indexed_at` is still ahead of the update they missed, and a NULL
+-- marker COALESCEs straight back to it):
+--
+--   UPDATE item_search SET source_updated_at = '-infinity';
+--
+-- Every row then looks stale exactly once. Unchanged rows hit the content-hash
+-- check, skip the embedder, and settle via markSourceVersion; only genuinely
+-- divergent rows are re-embedded. Run it only AFTER this build is deployed — the
+-- older worker's skip path writes nothing, so no row would settle and the sweep
+-- would re-scan the corpus forever.
 
 ALTER TABLE item_search ADD COLUMN IF NOT EXISTS source_updated_at timestamptz;
