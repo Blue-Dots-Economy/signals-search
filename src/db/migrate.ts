@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import postgres from 'postgres';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS = ['0001_item_search.sql'];
+const MIGRATIONS = ['0001_item_search.sql', '0002_item_search_source_updated_at.sql'];
 
 export async function runMigrations(databaseUrl: string): Promise<void> {
   const sql = postgres(databaseUrl, { max: 1 });

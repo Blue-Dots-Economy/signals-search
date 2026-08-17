@@ -11,6 +11,19 @@ export type SourceItem = {
   item_state: Record<string, unknown>;
   item_locations: ItemLocation[];
   lifecycle_status: string;
+  /** Version marker for the staleness check (#122): `items.updated_at` as an
+   *  `extract(epoch ...)::text` decimal string. Must be selected in the SAME query
+   *  as the rest of the row, so it describes exactly the snapshot being indexed —
+   *  the row can be updated again while the embedder is in flight.
+   *
+   *  Epoch-numeric, not a `Date` and not a timestamp string, because BOTH lose
+   *  microseconds: Postgres keeps µs, a JS `Date` is ms-only, and postgres.js
+   *  coerces a timestamp-shaped bound string to a `Date` before sending it. Either
+   *  way the marker lands up to 999µs BELOW `items.updated_at`, and then EVERY row
+   *  satisfies the sweep predicate on every tick forever. A decimal string is not
+   *  date-shaped, so it survives the round trip exactly. Never interpreted here —
+   *  read out, handed back, converted with `to_timestamp` at the write. */
+  updated_at_epoch: string;
 };
 
 export type IndexResult = { action: 'indexed' | 'skipped' };
@@ -40,6 +53,10 @@ export async function indexItem(args: {
     item_id: item.item_id,
   };
   if ((await repo.getContentHash(key)) === hash) {
+    // Nothing the read model derives from changed, so don't re-embed — but the
+    // source row did move on, so record the version we just checked or the sweep
+    // re-selects this row forever (#122).
+    await repo.markSourceVersion(key, item.updated_at_epoch);
     return { action: 'skipped' };
   }
   // No vectorizable content (e.g. a profile that hasn't filled any vectorized
@@ -57,6 +74,9 @@ export async function indexItem(args: {
     lifecycleStatus: item.lifecycle_status,
     modelVersion,
     contentHash: hash,
+    // The version READ above, not the write clock: an update committed while the
+    // embedder was in flight must still look newer than this write (#122).
+    sourceUpdatedAtEpoch: item.updated_at_epoch,
   });
   return { action: 'indexed' };
 }

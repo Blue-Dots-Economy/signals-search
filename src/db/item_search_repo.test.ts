@@ -29,6 +29,7 @@ describe('ItemSearchRepo.upsert', () => {
       lifecycleStatus: 'live',
       modelVersion: 'BAAI/bge-m3@1024',
       contentHash: 'abc',
+      sourceUpdatedAtEpoch: '1700000000',
     });
 
     const ann = await sql<{ item_id: string }[]>`
@@ -45,7 +46,7 @@ describe('ItemSearchRepo.upsert', () => {
   it('upsert updates in place (no duplicate PK)', async () => {
     const embedding = Array.from({ length: 1024 }, () => 0);
     embedding[1] = 1;
-    await repo.upsert({ ...key, embedding, locations: [], lifecycleStatus: 'paused', modelVersion: 'm', contentHash: 'def' });
+    await repo.upsert({ ...key, embedding, locations: [], lifecycleStatus: 'paused', modelVersion: 'm', contentHash: 'def', sourceUpdatedAtEpoch: '1700000000' });
     const rows = await sql<{ content_hash: string }[]>`SELECT content_hash FROM item_search WHERE item_id = ${key.item_id}`;
     expect(rows).toHaveLength(1);
     expect(rows[0].content_hash).toBe('def');
@@ -53,7 +54,7 @@ describe('ItemSearchRepo.upsert', () => {
 
   it('accepts a NULL embedding (geo-only row) for items without vectorizable content', async () => {
     const k = { ...key, item_id: '11111111-2222-4333-8444-555566667777' };
-    await repo.upsert({ ...k, embedding: null, locations: [{ lat: 12.9, lng: 77.6 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'geo-only' });
+    await repo.upsert({ ...k, embedding: null, locations: [{ lat: 12.9, lng: 77.6 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'geo-only', sourceUpdatedAtEpoch: '1700000000' });
     const rows = await sql<{ embedding: unknown; has_geo: boolean }[]>`
       SELECT embedding, geo IS NOT NULL AS has_geo FROM item_search WHERE item_id = ${k.item_id}`;
     expect(rows).toHaveLength(1);

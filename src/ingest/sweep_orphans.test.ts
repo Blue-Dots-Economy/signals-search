@@ -9,7 +9,7 @@ import type { Sql } from 'postgres';
 let pg: StartedPostgreSqlContainer;
 let sql: Sql;
 const N = 1024;
-const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0' };
+const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
 const KEEP = '11111111-1111-1111-1111-111111111111';
 const ORPHAN = '22222222-2222-2222-2222-222222222222';
 function vec(seed: number) { const v = Array.from({ length: N }, () => 0); v[seed % N] = 1; return v; }

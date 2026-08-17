@@ -24,7 +24,8 @@ export async function processEvent(args: {
     return;
   }
   const rows = await sql<SourceItem[]>`
-    SELECT item_network, item_domain, item_type, item_id, item_state, item_locations, lifecycle_status
+    SELECT item_network, item_domain, item_type, item_id, item_state, item_locations, lifecycle_status,
+           extract(epoch FROM updated_at)::text AS updated_at_epoch
     FROM items
     WHERE item_network = ${event.item_network} AND item_domain = ${event.item_domain}
       AND item_type = ${event.item_type} AND item_id = ${event.item_id}
