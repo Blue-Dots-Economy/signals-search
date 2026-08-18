@@ -12,8 +12,8 @@ import type { FastifyInstance } from 'fastify';
 let pg: StartedPostgreSqlContainer; let sql: Sql; let app: FastifyInstance;
 const N = 1024;
 const RAW = 'sk_signals_flat_test_key_abcdefghijklmnop';
-const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0' };
-const seekerBase = { item_network: 'purple_dot', item_domain: 'seeker', item_type: 'profile_1.0' };
+const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
+const seekerBase = { item_network: 'purple_dot', item_domain: 'seeker', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
 const A = '11111111-1111-1111-1111-111111111111';
 const S1 = '33333333-3333-3333-3333-333333333333'; // seeker anchor co-located with A
 const fakeEmbedder = { embed: async (t: string[]) => t.map(() => { const v = Array.from({ length: N }, () => 0); v[0] = 1; return v; }) };

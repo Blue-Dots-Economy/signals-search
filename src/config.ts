@@ -18,6 +18,11 @@ const EnvSchema = z.object({
   EMBEDDING_MODEL: z.string().min(1),
   EMBEDDING_DIM: z.coerce.number().int().positive().max(2000), // pgvector HNSW limit
   EMBEDDING_API_KEY: z.string().optional(),
+  // Serving-stack tag appended to model_version (e.g. 'tei-1.9'). UNSET BY DESIGN:
+  // model_version is part of the ingest content hash, so any change to it makes the
+  // sweep re-embed the whole corpus. Set this only as part of a deliberate TEI
+  // upgrade, where that re-index is the point (#102).
+  EMBEDDING_SERVING_VERSION: z.string().optional(),
   INGEST_STREAM: z.string().default('signals:item-events'),
   INGEST_CONSUMER_GROUP: z.string().default('signals-search'),
   INGEST_CONSUMER_NAME: z.string().default('worker-1'),
@@ -66,7 +71,7 @@ export type Config = {
   databaseUrl: string;
   redisUrl: string;
   runMigrations: boolean;
-  embedding: { baseUrl: string; model: string; dim: number; apiKey?: string; timeoutMs: number; maxRetries: number };
+  embedding: { baseUrl: string; model: string; dim: number; apiKey?: string; servingVersion?: string; timeoutMs: number; maxRetries: number };
   ingest: { stream: string; consumerGroup: string; consumerName: string; pelMinIdleMs: number; dlqStream: string; maxDeliveries: number; dlqMaxLen: number };
   sweep: { intervalMs: number; batchSize: number };
   api: { port: number };
@@ -83,7 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
   return {
     databaseUrl: e.DATABASE_URL,
     redisUrl: e.REDIS_URL,
-    embedding: { baseUrl: e.EMBEDDING_BASE_URL, model: e.EMBEDDING_MODEL, dim: e.EMBEDDING_DIM, apiKey: e.EMBEDDING_API_KEY, timeoutMs: e.EMBEDDING_TIMEOUT_MS, maxRetries: e.EMBEDDING_MAX_RETRIES },
+    embedding: { baseUrl: e.EMBEDDING_BASE_URL, model: e.EMBEDDING_MODEL, dim: e.EMBEDDING_DIM, apiKey: e.EMBEDDING_API_KEY, servingVersion: e.EMBEDDING_SERVING_VERSION, timeoutMs: e.EMBEDDING_TIMEOUT_MS, maxRetries: e.EMBEDDING_MAX_RETRIES },
     ingest: { stream: e.INGEST_STREAM, consumerGroup: e.INGEST_CONSUMER_GROUP, consumerName: e.INGEST_CONSUMER_NAME, pelMinIdleMs: e.PEL_MIN_IDLE_MS, dlqStream: e.INGEST_DLQ_STREAM ?? `${e.INGEST_STREAM}:dlq`, maxDeliveries: e.INGEST_MAX_DELIVERIES, dlqMaxLen: e.INGEST_DLQ_MAXLEN },
     sweep: { intervalMs: e.SWEEP_INTERVAL_MS, batchSize: e.SWEEP_BATCH_SIZE },
     api: { port: e.API_PORT },

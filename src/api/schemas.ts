@@ -37,7 +37,13 @@ const FilterClauseSchema = z.object({
 
 export const IntentSchema = z.object({
   textSearch: z.string().min(1).optional(),
-  item: z.object({ id: z.string().uuid() }).optional(),
+  // z.guid(), not z.uuid(): zod 4 tightened .uuid() to enforce the RFC 9562
+  // version/variant nibbles, which would reject ids that this API has always
+  // accepted (any 8-4-4-4-12 hex string, e.g. '1111...-1111'). z.guid() is zod 4's
+  // name for the loose form and preserves the pre-zod-4 contract exactly.
+  // Tightening to RFC-conforming ids is a deliberate API change, not a side
+  // effect of a dependency bump — see #98.
+  item: z.object({ id: z.guid() }).optional(),
   // At most one spatial clause: the search applies a single radius filter
   // (only the first clause was ever consumed), so reject extras explicitly
   // rather than silently ignoring them.
@@ -110,7 +116,8 @@ export const RelevanceRefSchema = z.object({
   network: z.string().min(1),
   domain: z.string().min(1),
   type: z.string().min(1),
-  id: z.string().uuid(),
+  // z.guid() rather than z.uuid() — see the note on IntentSchema.item above.
+  id: z.guid(),
 });
 
 // POST /v1/relevance body: the two items whose stored embeddings are compared.

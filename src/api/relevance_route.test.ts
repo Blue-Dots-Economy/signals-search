@@ -14,9 +14,9 @@ const N = 1024;
 const RAW = 'sk_signals_relevance_test_key_abcdefghijklmnop';
 // purple_dot fixture allows: seeker -> provider (same-network "apply") and
 // seeker -> blue_dot/aggregator (cross-network "refer").
-const seekerBase = { item_network: 'purple_dot', item_domain: 'seeker', item_type: 'profile_1.0' };
-const providerBase = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0' };
-const aggBase = { item_network: 'blue_dot', item_domain: 'aggregator', item_type: 'profile_1.0' };
+const seekerBase = { item_network: 'purple_dot', item_domain: 'seeker', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
+const providerBase = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
+const aggBase = { item_network: 'blue_dot', item_domain: 'aggregator', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
 const SEEKER = '11111111-1111-1111-1111-111111111111';       // live, model 'm'
 const PROV_MATCH = '22222222-2222-2222-2222-222222222222';   // live, model 'm', identical embedding to SEEKER
 const PROV_ORTH = '33333333-3333-3333-3333-333333333333';    // live, model 'm', orthogonal embedding

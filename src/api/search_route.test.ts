@@ -12,8 +12,8 @@ import type { FastifyInstance } from 'fastify';
 let pg: StartedPostgreSqlContainer; let sql: Sql; let app: FastifyInstance;
 const N = 1024;
 const RAW = 'sk_signals_route_test_key_abcdefghijklmnop';
-const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0' };
-const seekerBase = { item_network: 'purple_dot', item_domain: 'seeker', item_type: 'profile_1.0' };
+const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
+const seekerBase = { item_network: 'purple_dot', item_domain: 'seeker', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
 const A = '11111111-1111-1111-1111-111111111111';
 const B = '22222222-2222-2222-2222-222222222222'; // anchor that exists only under network blue_dot
 const S1 = '33333333-3333-3333-3333-333333333333'; // seeker anchor WITH a location (co-located with A)
@@ -36,7 +36,7 @@ beforeAll(async () => {
   await repo.upsert({ ...base, item_id: A, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'a' });
   // Foreign-network anchor: same item_id UUID would resolve under the old
   // item_id-only lookup; the network-scoped lookup must not see it (1.9b).
-  await repo.upsert({ item_network: 'blue_dot', item_domain: 'provider', item_type: 'profile_1.0', item_id: B, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'b' });
+  await repo.upsert({ item_network: 'blue_dot', item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000', item_id: B, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'b' });
   await repo.upsert({ ...seekerBase, item_id: S1, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 's1' });
   await repo.upsert({ ...seekerBase, item_id: S2, embedding: v, locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 's2' });
   const registry = await loadNetworkRegistry('test/fixtures/networks');

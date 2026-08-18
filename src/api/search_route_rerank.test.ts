@@ -36,11 +36,11 @@ beforeAll(async () => {
   await sql`INSERT INTO "apikey" (id,key,user_id,enabled) VALUES ('k1', ${createHash('sha256').update(RAW).digest('base64url')}, 'usr_1', true)`;
   const repo = new ItemSearchRepo(sql, N);
   // Anchor lives in the seeker domain; seeker -> provider is allowed by the fixture matrix.
-  await repo.upsert({ item_network: net, item_domain: 'seeker', item_type: 'profile_1.0', item_id: ANCHOR, embedding: vec(0), locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'anchor' });
+  await repo.upsert({ item_network: net, item_domain: 'seeker', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000', item_id: ANCHOR, embedding: vec(0), locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'anchor' });
   // Three live provider results.
   for (let i = 0; i < P.length; i++) {
     await sql`INSERT INTO items (item_network,item_domain,item_type,item_id) VALUES (${net},'provider','profile_1.0',${P[i]})`;
-    await repo.upsert({ item_network: net, item_domain: 'provider', item_type: 'profile_1.0', item_id: P[i], embedding: vec(i), locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: `p${i}` });
+    await repo.upsert({ item_network: net, item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000', item_id: P[i], embedding: vec(i), locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: `p${i}` });
   }
   const registry = await loadNetworkRegistry('test/fixtures/networks');
   // Rerank ON with a configured (but never-called) endpoint; the anchor path has

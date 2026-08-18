@@ -13,8 +13,17 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    # Job-level (not step-level) so the SonarCloud step's `if:` can read it —
+    # the `secrets` context is unavailable in a step conditional, and a step's
+    # own `env:` block is not in scope for its own `if:`.
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
+      # fetch-depth: 0 so the SonarCloud scan below can attribute new code to
+      # the right commits (a shallow clone leaves it blind to history).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v6
         with:
@@ -47,8 +56,29 @@ jobs:
       - name: Pre-build test Postgres image (pgvector + postgis)
         run: docker build -t signals-search-pg-test test/docker -f test/docker/Dockerfile.postgres
 
-      - name: Test
-        run: pnpm test
+      # --coverage rather than a second `pnpm test` run: the suite spins up
+      # Testcontainers, so running it twice to produce lcov would roughly double
+      # CI time. There are no coverage thresholds, so this cannot fail the build
+      # for coverage reasons — only for real test failures, same as before.
+      - name: Test (with coverage)
+        run: pnpm test:coverage
+
+      # Two independent guards, for two different failure modes:
+      #   `if:`               — no token at all. GitHub withholds repo secrets from
+      #                         Dependabot-raised (and fork) pull_request runs, so an
+      #                         ungated scan exits 3 with "Not authorized or project
+      #                         not found" on every dependency PR. Skip, don't run.
+      #   `continue-on-error` — token present but the scan fails (SonarCloud outage,
+      #                         expired token, quality gate). publish-image depends on
+      #                         this job, so that must not stop a green build from
+      #                         publishing the :develop image; problems surface in the
+      #                         run log and SonarCloud's own commit check instead.
+      # SONAR_TOKEN comes from the job-level `env` above — a step's own `env:` block
+      # is not in scope for its own `if:`.
+      - name: SonarCloud scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8
+        continue-on-error: true
 
   # Publish the :develop image only after build-and-test passes, on a develop
   # push. Gating publish inside the CI run (rather than a separate push-triggered
@@ -61,6 +91,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # Trivy image scan uploads SARIF to code-scanning
     steps:
       - uses: actions/checkout@v7
 
@@ -81,6 +112,7 @@ jobs:
             type=sha
 
       - uses: docker/build-push-action@v7
+        id: build
         with:
           context: .
           push: true
@@ -88,3 +120,29 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Image scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300).
+      # Mirrors build-image.yml. Both publish paths need it: build-image.yml is the
+      # manual escape hatch, this is the gated :develop publish — the stream that
+      # ships most often, so scanning only the manual path would leave the busiest
+      # artifact unscanned.
+      #
+      # Scanned by digest: buildx pushes to the registry without loading into the
+      # local docker image store, so `imageid` is not resolvable by Trivy.
+      - name: Trivy image scan
+        if: steps.build.outputs.digest != ''
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ghcr.io/blue-dots-economy/signals-search@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"   # Phase A: report-only, never blocks the :develop publish
+
+      - name: Upload Trivy image SARIF
+        if: always() && steps.build.outputs.digest != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image-app

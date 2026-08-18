@@ -11,7 +11,11 @@ updates:
       day: "monday"
       time: "03:00"
       timezone: "UTC"
-    open-pull-requests-limit: 5
+    # The limit counts open *version-update* PRs. Grouped updates plus a few
+    # singletons can sit right at 5 and silently block any further npm PR from
+    # being raised (observed in aggregator-dpg on 2026-08-04). 10 leaves headroom
+    # without becoming a flood.
+    open-pull-requests-limit: 10
     labels:
       - "dependencies"
     commit-message:
@@ -28,8 +32,25 @@ updates:
       # typescript-eslint does not support TS 7 yet — hold the major.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
-      # vitest 4 needs vite 6 in lockstep — hold the major.
+      # Hold the vitest major, and @vitest/coverage-v8 with it: coverage-v8 peers on
+      # the EXACT vitest version, so moving one alone leaves an unmet peer and a
+      # silently broken `pnpm test:coverage` — green CI, no lcov for SonarCloud.
+      # (Dependabot #91 proposed exactly that; see #97.) vite is now an explicit
+      # devDependency pinned to ^7 so the version vitest resolves is ours to choose,
+      # not whatever the lockfile happens to be holding — its major is held for the
+      # same lockstep reason.
       - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitest/coverage-v8"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
+      # @types/node must track the Node runtime major, which is 24 everywhere
+      # here (engines, CI node-version, and both Dockerfile stages). Types ahead
+      # of the runtime let code typecheck against APIs that do not exist at run
+      # time — #94 (24 -> 25) passed CI only because no test happens to touch a
+      # 25-only API. Lift this when the base image and `engines` move to 25.
+      - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
 
   # GitHub Actions — keeps CI workflow action versions current
@@ -76,3 +97,25 @@ updates:
       docker:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+
+    ignore:
+      # The TEI serving version is pinned deliberately, not lazily. TEI 1.8.0
+      # changed the default GeLU from erf to tanh, and bge-m3 is `hidden_act:
+      # gelu` (config.json at the pinned revision), so ANY upgrade past 1.7
+      # changes the vectors this service produces. Because `modelVersion` is only
+      # `<model>@<dim>` (src/worker/main.ts), that drift is invisible: content
+      # hashes do not change, nothing is re-embedded, old and new vectors coexist
+      # under one model_version, and the /v1/relevance comparability guard cannot
+      # see it (#102). 1.9.0 also flips --auto-truncate to default true, turning
+      # an over-long input from an error into a silent truncation.
+      #
+      # There is no security pressure: the Dockerfile has no Dependabot alerts,
+      # and 1.8/1.9's features (Qwen3, Llama, Blackwell, CUDA fixes) do not apply
+      # to a CPU deployment pinned to bge-m3.
+      #
+      # Upgrading is a planned migration — serving version into modelVersion, new
+      # image tag, matching chart pin in bluedots-automation, full re-index. See
+      # #102 and remove this entry when that work is scheduled.
+      - dependency-name: "ghcr.io/huggingface/text-embeddings-inference"
+      # The python base of the download stage is NOT held: it never ships (only
+      # /hf is copied into the final TEI image) and PRs now build it (#101).

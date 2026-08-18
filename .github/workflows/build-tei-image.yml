@@ -4,10 +4,20 @@ name: build-tei-image
 # (docker/tei-bge-m3/Dockerfile). Consumed by the bluedots-automation
 # search-embeddings chart. Rarely changes — runs on manual dispatch and when the
 # Dockerfile / pinned revision changes on develop.
+#
+# PRs touching those same paths run a build WITHOUT pushing. Before this, a change
+# to the Dockerfile had no CI at all: it was first exercised only after merging to
+# develop, so a broken edit (an unavailable base tag, a pip resolution failure in
+# the download stage) surfaced past the point of review. Dependabot's docker-group
+# PR #85 is exactly that case.
 on:
   workflow_dispatch:
   push:
     branches: [develop]
+    paths:
+      - docker/tei-bge-m3/**
+      - .github/workflows/build-tei-image.yml
+  pull_request:
     paths:
       - docker/tei-bge-m3/**
       - .github/workflows/build-tei-image.yml
@@ -18,20 +28,62 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # Trivy image scan uploads SARIF to code-scanning
     steps:
       - uses: actions/checkout@v7
 
+      # Not needed for the PR path, which only builds. Skipping it also keeps
+      # Dependabot-raised PRs working, where GITHUB_TOKEN is read-only.
       - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v7
+        id: build
         with:
           context: docker/tei-bge-m3
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           # Stable tag the search-embeddings chart pins to, plus an immutable sha tag.
+          # NOTE: the stable tag encodes the TEI version, so bumping the base image
+          # in the Dockerfile means changing this tag AND the chart's pin in
+          # bluedots-automation — otherwise `cpu-1.7-bge-m3` would ship a different
+          # TEI. See the notes on #85.
           tags: |
             ghcr.io/blue-dots-economy/tei-bge-m3:cpu-1.7-bge-m3
             ghcr.io/blue-dots-economy/tei-bge-m3:sha-${{ github.sha }}
+
+      # Image scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300).
+      # This image matters more than most: it is a third-party HuggingFace TEI base
+      # with model weights baked in, so it is the least-inspected supply-chain
+      # surface in the estate and nothing in package.json describes its contents.
+      #
+      # Scanned by digest rather than by the mutable `cpu-1.7-bge-m3` tag, so each
+      # result is tied to the artifact built in that run.
+      #
+      # Gated on the EVENT, not on `steps.build.outputs.digest != ''`. A digest guard
+      # looks equivalent but is not: this job has no setup-buildx-action, so it uses
+      # the default docker driver, which populates the `digest` output from the
+      # locally-built image even when `push: false`. Trivy then resolves a digest for
+      # an image that exists in no registry and fails with MANIFEST_UNKNOWN. The
+      # event is the same condition that decides `push:` above, so it is the honest
+      # one to gate on.
+      - name: Trivy image scan
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ghcr.io/blue-dots-economy/tei-bge-m3@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"   # Phase A: report-only, never fails the build
+
+      - name: Upload Trivy image SARIF
+        if: always() && github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image-tei-bge-m3
