@@ -8,11 +8,14 @@ on:
   push:
     branches: [main, develop, feature]
     # Release tags. Additive: the gated :develop publish below is unchanged.
-    #   v*.*.*  semver releases   e.g. v1.2.0
-    #   GA-*    dated GA cuts     e.g. GA-12-08-2026
+    #   v*.*.*      semver releases   e.g. v1.2.0
+    #   20*-s*-rc*  sprint release    e.g. 202608-s1-rc1
+    #               <YYYYMM>-s<sprint>-rc<candidate>. A fix for an issue found
+    #               in -rc1 ships as -rc2, so every candidate is its own image.
+    #               Supersedes the dated GA-<date> scheme, no longer built here.
     # GitHub reads this workflow FROM THE TAGGED COMMIT, so a tag cut from a
     # branch predating this change will not pick the new patterns up.
-    tags: ['v*.*.*', 'GA-*']
+    tags: ['v*.*.*', '20*-s*-rc*']
   pull_request:
     branches: [main, develop, feature]
 
@@ -125,7 +128,7 @@ jobs:
           # every release image, i.e. a release masquerading as the develop build.
           #
           # `type=ref,event=tag` emits the tag VERBATIM so the image tag equals the
-          # release tag (v1.2.0 -> v1.2.0, GA-12-08-2026 -> GA-12-08-2026).
+          # release tag (v1.2.0 -> v1.2.0, 202608-s1-rc1 -> 202608-s1-rc1).
           #
           # Comments stay OUT of the block scalar: it is passed to the action
           # verbatim, not parsed as YAML.
