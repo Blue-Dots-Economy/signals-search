@@ -7,6 +7,12 @@ on:
   # promotion path.
   push:
     branches: [main, develop, feature]
+    # Release tags. Additive: the gated :develop publish below is unchanged.
+    #   v*.*.*  semver releases   e.g. v1.2.0
+    #   GA-*    dated GA cuts     e.g. GA-12-08-2026
+    # GitHub reads this workflow FROM THE TAGGED COMMIT, so a tag cut from a
+    # branch predating this change will not pick the new patterns up.
+    tags: ['v*.*.*', 'GA-*']
   pull_request:
     branches: [main, develop, feature]
 
@@ -86,7 +92,13 @@ jobs:
   # default-branch caveat (as workflow_run would have). Manual builds: build-image.yml.
   publish-image:
     needs: build-and-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    # develop pushes publish :develop (as before); release tags publish an image
+    # named after the tag. Both go through `needs: build-and-test`, so a red build
+    # can never publish either — which is why this job lives here rather than in
+    # build-image.yml (the manual escape hatch, which has no such dependency).
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -107,8 +119,19 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/blue-dots-economy/signals-search
+          # `type=raw,value=develop` MUST stay gated on the develop branch. It was
+          # unconditional, which was harmless while this job only ran on develop —
+          # but now that tags reach it, an ungated entry would stamp :develop onto
+          # every release image, i.e. a release masquerading as the develop build.
+          #
+          # `type=ref,event=tag` emits the tag VERBATIM so the image tag equals the
+          # release tag (v1.2.0 -> v1.2.0, GA-12-08-2026 -> GA-12-08-2026).
+          #
+          # Comments stay OUT of the block scalar: it is passed to the action
+          # verbatim, not parsed as YAML.
           tags: |
-            type=raw,value=develop
+            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=ref,event=tag
             type=sha
 
       - uses: docker/build-push-action@v7
