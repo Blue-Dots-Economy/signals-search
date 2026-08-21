@@ -17,6 +17,7 @@ import type { Embedder } from '../embedding/provider.js';
 import type { NetworkRegistry } from '../config/network_registry.js';
 import { registerSearchRoute } from './search_route.js';
 import { registerRelevanceRoute } from './relevance_route.js';
+import type { AuthConfig } from './auth.js';
 
 /**
  * Runs a dependency check with a hard timeout, collapsing any failure (rejection
@@ -51,6 +52,8 @@ export type ApiDeps = {
   cacheTtlSeconds: number;
   embeddingDim: number;
   defaultDistanceMeters: number;
+  /** Required on purpose: no caller can boot the API unauthenticated by omission. */
+  auth: AuthConfig;
 };
 
 export type ApiReferenceOptions = { enabled: boolean; publicBaseUrl?: string };

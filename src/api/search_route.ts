@@ -1,8 +1,8 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse } from './schemas.js';
-import { authenticateApiKey } from './auth.js';
+import { authenticateRequest } from './auth.js';
 import { searchItems, type FilterClause } from '../db/search_query.js';
 import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
@@ -150,12 +150,30 @@ const SEARCH_RESPONSES = {
   403: ErrorSchema,
   404: ErrorSchema,
   422: ErrorSchema,
+  503: ErrorSchema,
 } as const;
 
-async function requireApiKey(deps: ApiDeps, apiKey: string | undefined, reply: FastifyReply): Promise<boolean> {
-  const caller = await authenticateApiKey(deps.sql, apiKey);
-  if (!caller) {
-    await reply.code(401).send({ error: 'UNAUTHORIZED', message: 'valid x-api-key required' });
+/**
+ * Authenticate, or answer the failure ourselves and tell the caller to stop.
+ * The status comes from the resolver — 401 bad/absent credential, 403 valid
+ * token from a client that may not search, 503 Keycloak unreachable.
+ */
+async function requireCaller(
+  deps: ApiDeps,
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<boolean> {
+  const result = await authenticateRequest(
+    {
+      authorization: request.headers.authorization,
+      apiKey: request.headers['x-api-key'] as string | undefined,
+    },
+    { sql: deps.sql, auth: deps.auth },
+  );
+  if (!result.ok) {
+    await reply
+      .code(result.failure.status)
+      .send({ error: result.failure.error, message: result.failure.message });
     return false;
   }
   return true;
@@ -174,7 +192,7 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
       response: SEARCH_RESPONSES,
     },
   }, async (request, reply) => {
-    if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
+    if (!(await requireCaller(deps, request, reply))) return reply;
     // Body is already validated by the Zod route schema (type provider).
     return runSearch(reply, deps, request.body);
   });
@@ -201,7 +219,7 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
       response: SEARCH_RESPONSES,
     },
   }, async (request, reply) => {
-    if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
+    if (!(await requireCaller(deps, request, reply))) return reply;
     // unflatten can throw on malformed input (an over-large array index, or a
     // key that both is a scalar and has children, e.g. {"a":"1","a.b":"2"}).
     // Map those to the same 400 the schema path returns — never a 500.

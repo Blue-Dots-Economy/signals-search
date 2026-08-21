@@ -12,6 +12,7 @@ const deps = {
   cacheTtlSeconds: 0,
   embeddingDim: 1024,
   defaultDistanceMeters: 30000,
+  auth: { acceptApiKey: true },
 } as ApiDeps;
 
 describe('OpenAPI / served docs', () => {

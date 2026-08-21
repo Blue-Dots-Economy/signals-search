@@ -15,6 +15,7 @@ const deps = {
   cacheTtlSeconds: 0,
   embeddingDim: 1024,
   defaultDistanceMeters: 30000,
+  auth: { acceptApiKey: true },
 } as ApiDeps;
 
 // Public URL embedded in the published spec. Generic host by design:

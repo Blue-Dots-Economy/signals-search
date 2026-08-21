@@ -3,7 +3,7 @@ import { buildServer } from './server.js';
 
 describe('buildServer', () => {
   it('serves GET /health', async () => {
-    const app = buildServer({ deps: {} as any });
+    const app = buildServer({ deps: { auth: { acceptApiKey: true } } as any });
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: 'ok' });
@@ -11,7 +11,7 @@ describe('buildServer', () => {
   });
 
   it('echoes an inbound x-request-id back on the response', async () => {
-    const app = buildServer({ deps: {} as any });
+    const app = buildServer({ deps: { auth: { acceptApiKey: true } } as any });
     const res = await app.inject({
       method: 'GET',
       url: '/health',
@@ -22,7 +22,7 @@ describe('buildServer', () => {
   });
 
   it('generates a correlation id when none is supplied', async () => {
-    const app = buildServer({ deps: {} as any });
+    const app = buildServer({ deps: { auth: { acceptApiKey: true } } as any });
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.headers['x-request-id']).toMatch(/^req-/);
     await app.close();
@@ -32,6 +32,7 @@ describe('buildServer', () => {
     const deps = {
       sql: () => Promise.resolve([{ ok: 1 }]),
       redis: { ping: async () => 'PONG' },
+      auth: { acceptApiKey: true },
     } as any;
     const app = buildServer({ deps });
     const res = await app.inject({ method: 'GET', url: '/ready' });
@@ -44,6 +45,7 @@ describe('buildServer', () => {
     const deps = {
       sql: () => Promise.reject(new Error('pg down')),
       redis: { ping: async () => 'PONG' },
+      auth: { acceptApiKey: true },
     } as any;
     const app = buildServer({ deps });
     const res = await app.inject({ method: 'GET', url: '/ready' });

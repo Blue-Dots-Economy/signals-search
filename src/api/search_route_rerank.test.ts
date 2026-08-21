@@ -55,6 +55,7 @@ beforeAll(async () => {
       cacheTtlSeconds: 0,
       embeddingDim: N,
       defaultDistanceMeters: 30000,
+      auth: { acceptApiKey: true },
     },
   });
 });

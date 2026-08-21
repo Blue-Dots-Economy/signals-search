@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { RelevanceRequestSchema, RelevanceResponseSchema, ErrorSchema } from './schemas.js';
-import { authenticateApiKey } from './auth.js';
+import { authenticateRequest } from './auth.js';
 import { computeRelevance } from '../db/relevance_query.js';
 
 /**
@@ -35,12 +35,21 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
         403: ErrorSchema,
         404: ErrorSchema,
         409: ErrorSchema,
+        503: ErrorSchema,
       },
     },
   }, async (request, reply) => {
-    const caller = await authenticateApiKey(deps.sql, request.headers['x-api-key'] as string | undefined);
-    if (!caller) {
-      return reply.code(401).send({ error: 'UNAUTHORIZED', message: 'valid x-api-key required' });
+    const auth = await authenticateRequest(
+      {
+        authorization: request.headers.authorization,
+        apiKey: request.headers['x-api-key'] as string | undefined,
+      },
+      { sql: deps.sql, auth: deps.auth },
+    );
+    if (!auth.ok) {
+      return reply
+        .code(auth.failure.status)
+        .send({ error: auth.failure.error, message: auth.failure.message });
     }
 
     // Body is already validated by the Zod route schema (type provider).
