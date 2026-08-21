@@ -15,6 +15,13 @@ export type MintOverrides = {
    * `undefined`, which falls back to the default below).
    */
   azp?: string | null;
+  /**
+   * Override `client_id` INDEPENDENTLY of `azp` — the mapper-settable claim the
+   * client gate must never derive an identity from. Defaults to whatever `azp`
+   * resolves to (Keycloak's own shape); pass null to omit `client_id` while
+   * keeping `azp`.
+   */
+  clientId?: string | null;
   aud?: string | string[];
   /** Anything `jose`'s setExpirationTime accepts; pass a past epoch second for an expired token. */
   expiresIn?: string | number;
@@ -66,6 +73,7 @@ export async function startJwksServer(): Promise<JwksHarness> {
         sub = '11111111-2222-3333-4444-555555555555',
         iss = issuer,
         azp = 'signals-search',
+        clientId,
         // Keycloak's shape once the audience mapper is in place: the resource
         // server plus the default `account`.
         aud = ['signals-search', 'account'],
@@ -73,7 +81,14 @@ export async function startJwksServer(): Promise<JwksHarness> {
         claims = {},
         signWithForeignKey = false,
       } = overrides;
-      const jwt = new SignJWT({ ...(azp ? { azp, client_id: azp } : {}), ...claims })
+      // Unset `clientId` mirrors Keycloak (client_id === azp); an explicit value
+      // (or null) lets a test mint the two apart.
+      const resolvedClientId = clientId === undefined ? azp : clientId;
+      const jwt = new SignJWT({
+        ...(azp ? { azp } : {}),
+        ...(resolvedClientId ? { client_id: resolvedClientId } : {}),
+        ...claims,
+      })
         .setProtectedHeader({ alg: 'RS256', kid: KID })
         .setIssuer(iss)
         .setAudience(aud)

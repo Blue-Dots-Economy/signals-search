@@ -84,16 +84,53 @@ describe('verifyKeycloakToken', () => {
     expect(result).toMatchObject({ ok: false, code: 'TOKEN_CLIENT_REJECTED' });
   });
 
-  it('falls back to the service-account username when azp and client_id are absent', async () => {
-    const token = await jwks.mint({
-      azp: null,
-      claims: { preferred_username: 'service-account-voice-dpg' },
-    });
+  it('rejects a token whose mapper-written client_id disagrees with azp', async () => {
+    // The bypass: `azp` is the client Keycloak authenticated (not allowlisted);
+    // `client_id` is a claim a hardcoded-claim mapper can write to anything.
+    // Deriving the identity from `client_id` would authenticate this as
+    // 'voice-dpg'. A mismatch is a rejection, never a preference.
+    const token = await jwks.mint({ azp: 'aggregator-dpg', clientId: 'voice-dpg' });
+    const result = await verifyKeycloakToken(token, cfg);
+    expect(result).toMatchObject({ ok: false, code: 'TOKEN_CLIENT_REJECTED' });
+  });
+
+  it('accepts a token whose client_id agrees with azp (Keycloak\'s normal shape)', async () => {
+    const token = await jwks.mint({ azp: 'voice-dpg', clientId: 'voice-dpg' });
     const result = await verifyKeycloakToken(token, cfg);
     expect(result).toEqual({
       ok: true,
       caller: { clientId: 'voice-dpg', sub: '11111111-2222-3333-4444-555555555555' },
     });
+  });
+
+  it('rejects a token with no azp, whatever client_id or the username claim to be', async () => {
+    // Keycloak always sets `azp`, so this token cannot come from the realm —
+    // and neither the mapper-settable `client_id` nor the user-controlled
+    // `preferred_username` may stand in for it.
+    const token = await jwks.mint({
+      azp: null,
+      clientId: 'voice-dpg',
+      claims: { preferred_username: 'service-account-voice-dpg' },
+    });
+    const result = await verifyKeycloakToken(token, cfg);
+    expect(result).toMatchObject({ ok: false, code: 'TOKEN_CLIENT_REJECTED' });
+  });
+
+  it('rejects an ID token replayed as an access token (typ: ID)', async () => {
+    // `signals-search` is both this resource server and an allowlisted client
+    // id, so an ID token otherwise clears both client gates.
+    const token = await jwks.mint({ claims: { typ: 'ID' } });
+    const result = await verifyKeycloakToken(token, cfg);
+    expect(result).toMatchObject({ ok: false, code: 'TOKEN_INVALID' });
+  });
+
+  it('accepts typ: Bearer, and a token with no typ claim at all', async () => {
+    // Absence is tolerated on purpose: an RFC-9068-profile realm carries the
+    // marker in the JWS header and emits no `typ` claim.
+    const stamped = await verifyKeycloakToken(await jwks.mint({ claims: { typ: 'Bearer' } }), cfg);
+    expect(stamped).toMatchObject({ ok: true });
+    const bare = await verifyKeycloakToken(await jwks.mint(), cfg);
+    expect(bare).toMatchObject({ ok: true });
   });
 
   it('reports an expired token distinctly from an invalid one', async () => {

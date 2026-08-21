@@ -158,22 +158,53 @@ export function extractBearerToken(
 }
 
 /**
- * The client id a token was issued to. Keycloak puts it in `client_id` on
- * client-credentials tokens and in `azp` on all of them; the
- * `service-account-<clientId>` username is the fallback for realms that strip
- * both.
+ * The client id a token was issued to — from `azp`, and **only** from `azp`.
+ *
+ * The trust order here is load-bearing, not stylistic. `azp` is written by
+ * Keycloak itself from the client that authenticated; `client_id` is an ordinary
+ * claim, and any client in the realm that can add a hardcoded-claim protocol
+ * mapper can set it to whatever it likes. Preferring `client_id` (as the
+ * Signals-DPG original does) therefore lets exactly the actor this gate exists
+ * to stop walk straight through it: a token minted for `aggregator-dpg` with a
+ * mapper writing `client_id: voice-dpg` would be accepted as `voice-dpg`. So
+ * `client_id` is consulted only to REJECT — Keycloak emits the two identically
+ * on client-credentials tokens, so disagreement means a mapper or a forgery.
+ *
+ * There is deliberately NO `preferred_username` / `service-account-<clientId>`
+ * fallback. Keycloak always sets `azp`, so that branch was unreachable from any
+ * realm-issued token while being the one place a user-controlled string fed
+ * client-identity derivation. Do not "simplify" this back toward the Signals-DPG
+ * shape — issue #108's wording describes that implementation, not a requirement.
  */
 function serviceClientId(payload: JWTPayload): string | null {
-  if (typeof payload.client_id === 'string' && payload.client_id) return payload.client_id;
-  if (typeof payload.azp === 'string' && payload.azp) return payload.azp;
-  if (
-    typeof payload.preferred_username === 'string' &&
-    payload.preferred_username.startsWith('service-account-')
-  ) {
-    return payload.preferred_username.slice('service-account-'.length) || null;
-  }
-  return null;
+  const azp = payload.azp;
+  if (typeof azp !== 'string' || !azp) return null;
+  if (payload.client_id !== undefined && payload.client_id !== azp) return null;
+  return azp;
 }
+
+/**
+ * Token types accepted as an access token, compared case-insensitively.
+ *
+ * Keycloak stamps `typ: 'Bearer'` on access tokens and `typ: 'ID'` on ID tokens.
+ * Without this check an ID token passes the whole gate — it carries `azp`, and
+ * `signals-search` is both this resource server and an allowlisted client id, so
+ * its `aud` names us too. Presence is NOT required: a realm on the RFC-9068
+ * profile moves the marker into the JWS header (`typ: at+jwt`) and emits no
+ * claim, and demanding `typ === 'Bearer'` would lock those realms out entirely.
+ * Present-but-wrong is the rejection; absent is fine.
+ */
+const ACCEPTED_TOKEN_TYPES = new Set(['bearer', 'at+jwt']);
+
+/**
+ * Signature algorithms accepted. Asymmetric only, on purpose: an allowlist
+ * without a symmetric entry closes the "HS256 signed with the RSA modulus"
+ * confusion class and `alg: none` permanently, instead of relying on jose's key
+ * filtering plus the realm publishing no symmetric keys — both true today, both
+ * able to move under us. It is a list rather than `['RS256']` so a realm
+ * rotating its signature algorithm is a re-verify, not a total auth outage.
+ */
+const ACCEPTED_JWS_ALGORITHMS = ['RS256', 'ES256', 'PS256'];
 
 export async function verifyKeycloakToken(
   token: string,
@@ -184,6 +215,7 @@ export async function verifyKeycloakToken(
     ({ payload } = await jwtVerify(token, getJwks(cfg), {
       issuer: cfg.issuer,
       clockTolerance: cfg.clockToleranceSeconds,
+      algorithms: ACCEPTED_JWS_ALGORITHMS,
     }));
   } catch (err) {
     if (err instanceof joseErrors.JWTExpired) {
@@ -208,6 +240,19 @@ export async function verifyKeycloakToken(
     return { ok: false, code: 'TOKEN_INVALID', message: 'Access token has no subject (sub) claim' };
   }
 
+  // Gate 0: it must be an access token, not an ID (or refresh) token replayed
+  // as one. See ACCEPTED_TOKEN_TYPES for why absence is tolerated.
+  if (
+    payload.typ !== undefined &&
+    !ACCEPTED_TOKEN_TYPES.has(typeof payload.typ === 'string' ? payload.typ.toLowerCase() : '')
+  ) {
+    return {
+      ok: false,
+      code: 'TOKEN_INVALID',
+      message: 'Token is not an access token (unexpected typ claim)',
+    };
+  }
+
   // Gate 1: the token must be FOR this service. `aud` is not checked via
   // jwtVerify's own `audience` option on purpose — jose reports a mismatch as a
   // generic claim failure, and this deserves its own code (and a 403, not a 401).
@@ -219,7 +264,8 @@ export async function verifyKeycloakToken(
     };
   }
 
-  // Gate 2: and it must be FROM a client permitted to search.
+  // Gate 2: and it must be FROM a client permitted to search, as named by `azp`
+  // (see serviceClientId — `client_id` is mapper-settable and never trusted).
   const clientId = serviceClientId(payload);
   if (!clientId || !cfg.serviceClientIds.includes(clientId)) {
     return {
