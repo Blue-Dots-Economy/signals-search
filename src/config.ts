@@ -12,6 +12,12 @@ const envBool = (defaultValue: boolean) =>
     .default(defaultValue)
     .transform((v) => v === true || v === 'true' || v === '1');
 
+// An optional URL var where an EMPTY string means "unset". Helm and compose both
+// render an unset value as `KEYCLOAK_BASE_URL=`, and a bare `z.string().url()`
+// would crash the boot on that — while the switch is documented as "leave it
+// unset". Blank and absent must therefore mean the same thing.
+const optionalUrl = () => z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional());
+
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -68,10 +74,10 @@ const EnvSchema = z.object({
   PUBLIC_API_BASE_URL: z.string().url().optional(),
   // Keycloak service auth (#108). KEYCLOAK_BASE_URL is the switch: unset means
   // bearer tokens are not accepted at all, and this deployment is api-key-only.
-  KEYCLOAK_BASE_URL: z.string().url().optional(),
+  KEYCLOAK_BASE_URL: optionalUrl(),
   // Browser-facing base is what `iss` carries; the JWKS fetch should stay
   // in-cluster. Falls back to KEYCLOAK_BASE_URL when they are the same host.
-  KEYCLOAK_INTERNAL_BASE_URL: z.string().url().optional(),
+  KEYCLOAK_INTERNAL_BASE_URL: optionalUrl(),
   KEYCLOAK_REALM: z.string().min(1).default('bluedots'),
   // This service's own realm client id — every token must name it in `aud`.
   KEYCLOAK_AUDIENCE: z.string().min(1).default('signals-search'),
@@ -103,25 +109,40 @@ export type Config = {
 };
 
 /**
+ * Strip EVERY trailing slash, not just one: `https://a.example//` would
+ * otherwise become the issuer `https://a.example//realms/bluedots`, which no
+ * token's `iss` can ever match — an all-401 deployment from a stray keystroke.
+ * One helper for both URLs so it stays fixed in one place.
+ */
+const stripTrailingSlashes = (url: string) => url.replace(/\/+$/, '');
+
+/**
  * Resolve the authentication mode from env, failing fast rather than booting
- * into a state nobody intended. Two refusals matter:
+ * into a state nobody intended. Three refusals matter:
  *
  *  - Keycloak configured with an EMPTY client allowlist would accept any token
  *    the realm signs that names our audience — in a shared realm that is not a
  *    small mistake.
  *  - Neither provider enabled would leave the search routes open.
+ *  - Only the INTERNAL base url set would silently leave bearer auth off (`iss`
+ *    is always compared against the public base), i.e. an api-key-only
+ *    deployment that looks configured.
  */
 function buildAuthConfig(e: z.infer<typeof EnvSchema>): AuthConfig {
-  const baseUrl = (e.KEYCLOAK_BASE_URL ?? '').replace(/\/$/, '');
-  const internalBaseUrl = (e.KEYCLOAK_INTERNAL_BASE_URL ?? e.KEYCLOAK_BASE_URL ?? '').replace(
-    /\/$/,
-    '',
+  const baseUrl = stripTrailingSlashes(e.KEYCLOAK_BASE_URL ?? '');
+  const internalBaseUrl = stripTrailingSlashes(
+    e.KEYCLOAK_INTERNAL_BASE_URL ?? e.KEYCLOAK_BASE_URL ?? '',
   );
   const serviceClientIds = e.KEYCLOAK_SERVICE_CLIENT_IDS.split(',')
     .map((id) => id.trim())
     .filter((id) => id !== '');
 
   if (!baseUrl) {
+    if (internalBaseUrl) {
+      throw new Error(
+        'KEYCLOAK_INTERNAL_BASE_URL is set without KEYCLOAK_BASE_URL, which would leave bearer auth off: set KEYCLOAK_BASE_URL to the public realm base url that tokens carry in `iss`',
+      );
+    }
     if (!e.AUTH_ACCEPT_API_KEY) {
       throw new Error(
         'No authentication is configured: set KEYCLOAK_BASE_URL, or leave AUTH_ACCEPT_API_KEY=true',

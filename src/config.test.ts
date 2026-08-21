@@ -123,6 +123,34 @@ describe('loadConfig — auth', () => {
     );
   });
 
+  it('treats an empty KEYCLOAK_BASE_URL as unset rather than crashing the boot', () => {
+    // How Helm/compose render an unset value; the switch is documented as
+    // "leave it unset", so blank must mean the same thing, not a boot failure.
+    const cfg = loadConfig({ ...base, KEYCLOAK_BASE_URL: '', KEYCLOAK_INTERNAL_BASE_URL: '' });
+    expect(cfg.auth).toEqual({ acceptApiKey: true });
+  });
+
+  it('strips repeated trailing slashes from the base url', () => {
+    // A doubled slash would yield `https://auth.example.com//realms/bluedots`,
+    // an issuer no token's `iss` can match.
+    const cfg = loadConfig({
+      ...base,
+      KEYCLOAK_BASE_URL: 'https://auth.example.com//',
+      KEYCLOAK_INTERNAL_BASE_URL: 'http://keycloak:8080//',
+      KEYCLOAK_SERVICE_CLIENT_IDS: 'signals-search',
+    });
+    expect(cfg.auth.keycloak?.issuer).toBe('https://auth.example.com/realms/bluedots');
+    expect(cfg.auth.keycloak?.jwksUri).toBe(
+      'http://keycloak:8080/realms/bluedots/protocol/openid-connect/certs',
+    );
+  });
+
+  it('refuses to boot with only the internal base url set', () => {
+    expect(() =>
+      loadConfig({ ...base, KEYCLOAK_INTERNAL_BASE_URL: 'http://keycloak:8080' }),
+    ).toThrow(/KEYCLOAK_BASE_URL/);
+  });
+
   it('refuses to boot with Keycloak configured but no client allowlist', () => {
     expect(() =>
       loadConfig({ ...base, KEYCLOAK_BASE_URL: 'https://auth.example.com' }),
