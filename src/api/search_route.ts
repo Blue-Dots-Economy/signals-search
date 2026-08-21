@@ -1,8 +1,8 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse } from './schemas.js';
-import { authenticateRequest } from './auth.js';
+import { requireCaller } from './require_caller.js';
 import { searchItems, type FilterClause } from '../db/search_query.js';
 import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
@@ -152,32 +152,6 @@ const SEARCH_RESPONSES = {
   422: ErrorSchema,
   503: ErrorSchema,
 } as const;
-
-/**
- * Authenticate, or answer the failure ourselves and tell the caller to stop.
- * The status comes from the resolver — 401 bad/absent credential, 403 valid
- * token from a client that may not search, 503 Keycloak unreachable.
- */
-async function requireCaller(
-  deps: ApiDeps,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<boolean> {
-  const result = await authenticateRequest(
-    {
-      authorization: request.headers.authorization,
-      apiKey: request.headers['x-api-key'] as string | undefined,
-    },
-    { sql: deps.sql, auth: deps.auth },
-  );
-  if (!result.ok) {
-    await reply
-      .code(result.failure.status)
-      .send({ error: result.failure.error, message: result.failure.message });
-    return false;
-  }
-  return true;
-}
 
 export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
   app.withTypeProvider<ZodTypeProvider>().post('/v1/search', {

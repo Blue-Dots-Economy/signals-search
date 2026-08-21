@@ -5,6 +5,7 @@ import { runMigrations } from '../db/migrate.js';
 import { ItemSearchRepo } from '../db/item_search_repo.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
 import { buildServer } from './server.js';
+import { resetKeycloakJwksCacheForTests } from './auth.js';
 import { startJwksServer, type JwksHarness } from '../../test/support/jwks.js';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Sql } from 'postgres';
@@ -122,5 +123,38 @@ describe('POST /v1/relevance', () => {
       payload: { source: seekerRef(SEEKER), target: providerRef(PROV_MATCH) },
     });
     expect(res.statusCode).toBe(200);
+  });
+
+  // This route shares one requireCaller with the search routes, so these two
+  // pin that the shared gate is actually reached here — the asymmetry that let
+  // a status drift in the old inlined copy ship green.
+  it('403s a valid token from a client that may not search', async () => {
+    const token = await jwks.mint({ azp: 'aggregator-dpg' });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/relevance',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { source: seekerRef(SEEKER), target: providerRef(PROV_MATCH) },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe('CLIENT_NOT_PERMITTED');
+  });
+
+  it('503s — not 401s — while the JWKS endpoint is down', async () => {
+    const token = await jwks.mint();
+    // jose memoises its key set per JWKS URL; without the reset, the earlier
+    // successful verification in this file would mean setFailing never causes a
+    // fetch and the outage path is never exercised.
+    resetKeycloakJwksCacheForTests();
+    jwks.setFailing(true);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/relevance',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { source: seekerRef(SEEKER), target: providerRef(PROV_MATCH) },
+    });
+    jwks.setFailing(false);
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe('AUTH_PROVIDER_UNAVAILABLE');
   });
 });

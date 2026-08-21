@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { RelevanceRequestSchema, RelevanceResponseSchema, ErrorSchema } from './schemas.js';
-import { authenticateRequest } from './auth.js';
+import { requireCaller } from './require_caller.js';
 import { computeRelevance } from '../db/relevance_query.js';
 
 /**
@@ -40,18 +40,9 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
       },
     },
   }, async (request, reply) => {
-    const auth = await authenticateRequest(
-      {
-        authorization: request.headers.authorization,
-        apiKey: request.headers['x-api-key'] as string | undefined,
-      },
-      { sql: deps.sql, auth: deps.auth },
-    );
-    if (!auth.ok) {
-      return reply
-        .code(auth.failure.status)
-        .send({ error: auth.failure.error, message: auth.failure.message });
-    }
+    // The SAME gate the search routes use (401/403/503 + the caller log line) —
+    // never re-inlined here, so a status can't drift between the two copies.
+    if (!(await requireCaller(deps, request, reply))) return reply;
 
     // Body is already validated by the Zod route schema (type provider).
     const { source, target } = request.body;

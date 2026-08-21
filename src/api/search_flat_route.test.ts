@@ -5,11 +5,12 @@ import { runMigrations } from '../db/migrate.js';
 import { ItemSearchRepo } from '../db/item_search_repo.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
 import { buildServer } from './server.js';
+import { startJwksServer, type JwksHarness } from '../../test/support/jwks.js';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Sql } from 'postgres';
 import type { FastifyInstance } from 'fastify';
 
-let pg: StartedPostgreSqlContainer; let sql: Sql; let app: FastifyInstance;
+let pg: StartedPostgreSqlContainer; let sql: Sql; let app: FastifyInstance; let jwks: JwksHarness;
 const N = 1024;
 const RAW = 'sk_signals_flat_test_key_abcdefghijklmnop';
 const base = { item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
@@ -32,9 +33,23 @@ beforeAll(async () => {
   await repo.upsert({ ...base, item_id: A, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'a' });
   await repo.upsert({ ...seekerBase, item_id: S1, embedding: v, locations: [{ lat: 12.93, lng: 77.62 }], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 's1' });
   const registry = await loadNetworkRegistry('test/fixtures/networks');
-  app = buildServer({ deps: { sql, redis: noRedis, embedder: fakeEmbedder, registry, rerank: { model: 'r', defaultOn: false, topN: 50 }, cacheTtlSeconds: 0, embeddingDim: N, defaultDistanceMeters: 30000, auth: { acceptApiKey: true } } });
+  jwks = await startJwksServer();
+  app = buildServer({
+    deps: {
+      sql, redis: noRedis, embedder: fakeEmbedder, registry,
+      rerank: { model: 'r', defaultOn: false, topN: 50 }, cacheTtlSeconds: 0, embeddingDim: N, defaultDistanceMeters: 30000,
+      auth: {
+        acceptApiKey: true,
+        keycloak: {
+          issuer: jwks.issuer, jwksUri: jwks.jwksUri, audience: 'signals-search',
+          serviceClientIds: ['signals-search'], jwksCacheMaxAgeMs: 600_000,
+          clockToleranceSeconds: 0,
+        },
+      },
+    },
+  });
 });
-afterAll(async () => { await app?.close(); await sql?.end(); await pg?.stop(); });
+afterAll(async () => { await app?.close(); await sql?.end(); await pg?.stop(); await jwks?.close(); });
 
 const ctx = { networkId: 'purple_dot', domain: 'provider', itemType: 'profile_1.0' };
 const post = (url: string, payload: unknown) =>
@@ -44,6 +59,45 @@ describe('POST /v1/search/flat', () => {
   it('401 without an api key', async () => {
     const res = await app.inject({ method: 'POST', url: '/v1/search/flat', payload: { 'context.messageId': 'm1' } });
     expect(res.statusCode).toBe(401);
+  });
+
+  // /v1/search/flat goes through the same shared requireCaller as /v1/search;
+  // this route had no bearer coverage at all, so a gate regression isolated to
+  // it would have shipped green.
+  it('serves a request carrying a valid bearer token', async () => {
+    const token = await jwks.mint();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/search/flat',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        'context.messageId': 'm-bearer',
+        'context.networkId': ctx.networkId,
+        'context.domain': ctx.domain,
+        'context.itemType': ctx.itemType,
+        'message.intent.textSearch': 'speech therapy',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().message.items[0].item_id).toBe(A);
+  });
+
+  it('403s a valid token from a client that may not search', async () => {
+    const token = await jwks.mint({ azp: 'aggregator-dpg' });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/search/flat',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        'context.messageId': 'm-403',
+        'context.networkId': ctx.networkId,
+        'context.domain': ctx.domain,
+        'context.itemType': ctx.itemType,
+        'message.intent.textSearch': 'speech therapy',
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe('CLIENT_NOT_PERMITTED');
   });
 
   it('free-text: identical result to the equivalent nested /v1/search call', async () => {
