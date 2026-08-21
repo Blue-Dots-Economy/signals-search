@@ -137,13 +137,27 @@ describe('authenticateRequest', () => {
     });
   });
 
-  it('rejects a bearer token when no Keycloak is configured', async () => {
+  it('falls through to the api key for a bearer header when no Keycloak is configured', async () => {
+    // With no Keycloak there is no token rollout for a stale key to mask, and a
+    // BFF forwarding its end user's Authorization header alongside its own
+    // service credential is a real shape — so the header is ignored, not refused.
+    const token = await jwks.mint();
+    const result = await authenticateRequest(
+      { authorization: `Bearer ${token}`, apiKey: RAW },
+      { sql, auth: { acceptApiKey: true } },
+    );
+    expect(result).toEqual({ ok: true, caller: { kind: 'api_key', userId: 'usr_1' } });
+  });
+
+  it('401s a bearer-only request when no Keycloak is configured', async () => {
     const token = await jwks.mint();
     const result = await authenticateRequest(
       { authorization: `Bearer ${token}` },
       { sql, auth: { acceptApiKey: true } },
     );
     expect(result).toMatchObject({ ok: false, failure: { status: 401 } });
+    // ...and does not advertise a credential this deployment cannot accept.
+    expect(result.ok === false && result.failure.message).toBe('valid x-api-key required');
   });
 
   it('rejects a request with no credential at all', async () => {

@@ -20,8 +20,10 @@ export type Caller =
 
 /**
  * How this deployment authenticates. `keycloak` absent = bearer auth is off
- * (KEYCLOAK_BASE_URL unset); `acceptApiKey` false = the dual-accept window has
- * been closed. `config.ts` refuses to boot with both off.
+ * (KEYCLOAK_BASE_URL unset), and an `Authorization: Bearer` header is then
+ * ignored rather than refused (see `authenticateRequest`); `acceptApiKey` false =
+ * the dual-accept window has been closed. `config.ts` refuses to boot with both
+ * off.
  */
 export type AuthConfig = { keycloak?: KeycloakAuthConfig; acceptApiKey: boolean };
 
@@ -60,10 +62,17 @@ export const resetKeycloakJwksCacheForTests = resetKeycloakJwksCache;
 /**
  * The one entry point every authenticated route uses.
  *
- * A present bearer token is **decided on** — never fallen back from. If a caller
- * sends both credentials during the dual-accept window and the token is bad,
- * answering on the api key instead would hide a broken token rollout behind a
- * stale key.
+ * **When Keycloak is configured**, a present bearer token is decided on — never
+ * fallen back from. If a caller sends both credentials during the dual-accept
+ * window and the token is bad, answering on the api key instead would hide a
+ * broken token rollout behind a stale key.
+ *
+ * **When it is not** (KEYCLOAK_BASE_URL unset — the shipped default), a bearer
+ * header is ignored and the api-key path runs. There is no token rollout to
+ * mask, so refusing would buy nothing and break a real shape: a BFF that
+ * forwards its end user's `Authorization` header alongside its own service
+ * credential — which Signals-DPG's discover BFF is. It also keeps the first
+ * deploy of this change a true no-op for such callers.
  *
  * The api-key path is the only one that touches Postgres; the bearer path is
  * purely cryptographic.
@@ -74,17 +83,9 @@ export async function authenticateRequest(
 ): Promise<AuthResult> {
   const bearer = extractBearerToken(headers.authorization);
 
-  if (bearer) {
-    if (!deps.auth.keycloak) {
-      return {
-        ok: false,
-        failure: {
-          status: 401,
-          error: 'UNAUTHORIZED',
-          message: 'bearer tokens are not accepted by this deployment',
-        },
-      };
-    }
+  // No Keycloak configured → the header is not a credential here at all, so it
+  // is neither decided on nor refused; fall through to the api key.
+  if (bearer && deps.auth.keycloak) {
     const result = await verifyKeycloakToken(bearer, deps.auth.keycloak);
     if (result.ok) {
       return {
@@ -114,14 +115,19 @@ export async function authenticateRequest(
     if (caller) return { ok: true, caller: { kind: 'api_key', userId: caller.userId } };
   }
 
+  // Advertise only the credentials this deployment actually accepts — naming a
+  // bearer token to an api-key-only deployment sends the caller in a circle.
+  // Never empty: `config.ts` refuses to boot with both providers off.
+  const accepted = [
+    ...(deps.auth.keycloak ? ['Authorization: Bearer <token>'] : []),
+    ...(deps.auth.acceptApiKey ? ['x-api-key'] : []),
+  ];
   return {
     ok: false,
     failure: {
       status: 401,
       error: 'UNAUTHORIZED',
-      message: deps.auth.acceptApiKey
-        ? 'valid Authorization: Bearer <token> or x-api-key required'
-        : 'valid Authorization: Bearer <token> required',
+      message: `valid ${accepted.join(' or ')} required`,
     },
   };
 }
