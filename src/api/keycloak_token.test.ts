@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { startJwksServer, type JwksHarness } from '../../test/support/jwks.js';
 import {
@@ -6,6 +8,20 @@ import {
   verifyKeycloakToken,
   type KeycloakAuthConfig,
 } from './keycloak_token.js';
+
+/**
+ * Find a port nothing is listening on: start a throwaway server, read the
+ * port the OS assigned, close it immediately. Deterministic — no guessing at
+ * an unused port and risking a flaky collision with something else on the
+ * box.
+ */
+async function closedLoopbackPort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address() as AddressInfo;
+  await new Promise<void>((resolve, reject) => probe.close((err) => (err ? reject(err) : resolve())));
+  return port;
+}
 
 let jwks: JwksHarness;
 let cfg: KeycloakAuthConfig;
@@ -114,6 +130,22 @@ describe('verifyKeycloakToken', () => {
     const token = await jwks.mint();
     jwks.setFailing(true);
     const result = await verifyKeycloakToken(token, cfg);
+    expect(result).toMatchObject({ ok: false, code: 'KEYCLOAK_UNAVAILABLE' });
+  });
+
+  it('reports a connection-level JWKS failure (refused connection) as an outage too', async () => {
+    // Unlike the 500-from-Keycloak case above, this never reaches an HTTP
+    // response at all: `createRemoteJWKSet`'s underlying `fetch` throws a
+    // `TypeError` whose real errno is nested under `.cause.code`, not on the
+    // error itself. Exercises that branch specifically.
+    const port = await closedLoopbackPort();
+    resetKeycloakJwksCache();
+    const unreachableCfg: KeycloakAuthConfig = {
+      ...cfg,
+      jwksUri: `http://127.0.0.1:${port}/realms/bluedots/protocol/openid-connect/certs`,
+    };
+    const token = await jwks.mint();
+    const result = await verifyKeycloakToken(token, unreachableCfg);
     expect(result).toMatchObject({ ok: false, code: 'KEYCLOAK_UNAVAILABLE' });
   });
 

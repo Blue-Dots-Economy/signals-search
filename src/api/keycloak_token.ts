@@ -38,9 +38,14 @@ export type KeycloakAuthConfig = {
 export type ServiceCaller = { clientId: string; sub: string };
 
 export type KeycloakTokenErrorCode =
-  /** Malformed, wrong signature, wrong issuer, or no subject. */
+  /**
+   * Malformed, wrong signature, wrong issuer, or no subject. Also covers a
+   * not-yet-valid (`nbf` in the future) token — jose raises that as a generic
+   * `JWTClaimValidationFailed`, not as its own error class, so it lands here
+   * rather than under `TOKEN_EXPIRED`.
+   */
   | 'TOKEN_INVALID'
-  /** Well-formed and correctly signed, but past `exp` (or before `nbf`). */
+  /** Well-formed and correctly signed, but past `exp`. */
   | 'TOKEN_EXPIRED'
   /** Valid realm token, but not for this service or not from a permitted client. */
   | 'TOKEN_CLIENT_REJECTED'
@@ -98,6 +103,15 @@ const NETWORK_ERROR_CODES = new Set([
  * (not a `JWKS*` subclass), and an unreachable host surfaces as a Node system
  * error, so neither is caught by an `instanceof JWKSTimeout` check alone.
  *
+ * `createRemoteJWKSet` fetches over the global `fetch`, not `node:http` —
+ * so a connection-level failure (refused, reset, unreachable, DNS, timeout)
+ * does NOT surface its errno on the error itself. `fetch` wraps it as a
+ * `TypeError: fetch failed` and buries the real code one level down at
+ * `err.cause.code`. Checking only `err.code` here would silently miss every
+ * one of those and misreport a real outage as `TOKEN_INVALID` — i.e. a 401
+ * instead of the 503 the caller is supposed to see. Do not "simplify" this
+ * back to a single `err.code` check.
+ *
  * `JWKSNoMatchingKey` is deliberately NOT an outage — the key set was fetched
  * fine; the token just named a `kid` that is not in it.
  */
@@ -113,7 +127,11 @@ function isJwksRetrievalFailure(err: unknown): boolean {
     return true;
   }
   const code = (err as NodeJS.ErrnoException | null)?.code;
-  return typeof code === 'string' && NETWORK_ERROR_CODES.has(code);
+  if (typeof code === 'string' && NETWORK_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const causeCode = (err as { cause?: NodeJS.ErrnoException } | null)?.cause?.code;
+  return typeof causeCode === 'string' && NETWORK_ERROR_CODES.has(causeCode);
 }
 
 /** Normalise the `aud` claim, which Keycloak emits as a string or an array. */
