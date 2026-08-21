@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AuthConfig } from './api/auth.js';
 
 // z.coerce.boolean() coerces via Boolean(), so EVERY non-empty string — including
 // the literal "false" — becomes true. That silently defeats env flags like
@@ -65,6 +66,23 @@ const EnvSchema = z.object({
   API_REFERENCE_ENABLED: z.enum(['true', 'false']).default('true'),
   API_REFERENCE_FORCE: z.enum(['true', 'false']).default('false'),
   PUBLIC_API_BASE_URL: z.string().url().optional(),
+  // Keycloak service auth (#108). KEYCLOAK_BASE_URL is the switch: unset means
+  // bearer tokens are not accepted at all, and this deployment is api-key-only.
+  KEYCLOAK_BASE_URL: z.string().url().optional(),
+  // Browser-facing base is what `iss` carries; the JWKS fetch should stay
+  // in-cluster. Falls back to KEYCLOAK_BASE_URL when they are the same host.
+  KEYCLOAK_INTERNAL_BASE_URL: z.string().url().optional(),
+  KEYCLOAK_REALM: z.string().min(1).default('bluedots'),
+  // This service's own realm client id — every token must name it in `aud`.
+  KEYCLOAK_AUDIENCE: z.string().min(1).default('signals-search'),
+  // Clients permitted to search. Load-bearing, not a formality: the realm is
+  // shared, so a token minted for Signals is signature- and issuer-valid here.
+  KEYCLOAK_SERVICE_CLIENT_IDS: z.string().default(''),
+  KEYCLOAK_JWKS_CACHE_MAX_AGE_MS: z.coerce.number().int().nonnegative().default(600_000),
+  KEYCLOAK_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().nonnegative().default(30),
+  // The dual-accept flag: keeps `x-api-key` working while callers migrate.
+  // Flip to false to retire that path.
+  AUTH_ACCEPT_API_KEY: envBool(true),
 });
 
 export type Config = {
@@ -81,7 +99,55 @@ export type Config = {
   cache: { ttlSeconds: number };
   search: { defaultDistanceMeters: number };
   apiReference: { enabled: boolean; publicBaseUrl?: string };
+  auth: AuthConfig;
 };
+
+/**
+ * Resolve the authentication mode from env, failing fast rather than booting
+ * into a state nobody intended. Two refusals matter:
+ *
+ *  - Keycloak configured with an EMPTY client allowlist would accept any token
+ *    the realm signs that names our audience — in a shared realm that is not a
+ *    small mistake.
+ *  - Neither provider enabled would leave the search routes open.
+ */
+function buildAuthConfig(e: z.infer<typeof EnvSchema>): AuthConfig {
+  const baseUrl = (e.KEYCLOAK_BASE_URL ?? '').replace(/\/$/, '');
+  const internalBaseUrl = (e.KEYCLOAK_INTERNAL_BASE_URL ?? e.KEYCLOAK_BASE_URL ?? '').replace(
+    /\/$/,
+    '',
+  );
+  const serviceClientIds = e.KEYCLOAK_SERVICE_CLIENT_IDS.split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '');
+
+  if (!baseUrl) {
+    if (!e.AUTH_ACCEPT_API_KEY) {
+      throw new Error(
+        'No authentication is configured: set KEYCLOAK_BASE_URL, or leave AUTH_ACCEPT_API_KEY=true',
+      );
+    }
+    return { acceptApiKey: true };
+  }
+
+  if (serviceClientIds.length === 0) {
+    throw new Error(
+      'KEYCLOAK_SERVICE_CLIENT_IDS must list at least one client id when KEYCLOAK_BASE_URL is set',
+    );
+  }
+
+  return {
+    acceptApiKey: e.AUTH_ACCEPT_API_KEY,
+    keycloak: {
+      issuer: `${baseUrl}/realms/${e.KEYCLOAK_REALM}`,
+      jwksUri: `${internalBaseUrl}/realms/${e.KEYCLOAK_REALM}/protocol/openid-connect/certs`,
+      audience: e.KEYCLOAK_AUDIENCE,
+      serviceClientIds,
+      jwksCacheMaxAgeMs: e.KEYCLOAK_JWKS_CACHE_MAX_AGE_MS,
+      clockToleranceSeconds: e.KEYCLOAK_CLOCK_TOLERANCE_SECONDS,
+    },
+  };
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): Config {
   const e = EnvSchema.parse(env);
@@ -104,5 +170,6 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
         (e.NODE_ENV !== 'production' || e.API_REFERENCE_FORCE === 'true'),
       publicBaseUrl: e.PUBLIC_API_BASE_URL,
     },
+    auth: buildAuthConfig(e),
   };
 }
