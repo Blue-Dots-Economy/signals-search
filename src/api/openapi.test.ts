@@ -26,10 +26,15 @@ describe('OpenAPI / served docs', () => {
 
     const search = spec.paths['/v1/search']?.post;
     expect(search).toBeTruthy();
-    expect(search.security).toEqual([{ apiKeyAuth: [] }]);
+    expect(search.security).toEqual([{ bearerAuth: [] }, { apiKeyAuth: [] }]);
     expect(search.requestBody).toBeTruthy();
     expect(search.responses?.['200']).toBeTruthy();
 
+    expect(spec.components.securitySchemes.bearerAuth).toMatchObject({
+      type: 'http',
+      scheme: 'bearer',
+      bearerFormat: 'JWT',
+    });
     expect(spec.components.securitySchemes.apiKeyAuth).toMatchObject({
       type: 'apiKey', in: 'header', name: 'x-api-key',
     });
@@ -46,7 +51,7 @@ describe('OpenAPI / served docs', () => {
     };
     const flat = spec.paths['/v1/search/flat']?.post;
     expect(flat).toBeTruthy();
-    expect(flat.security).toEqual([{ apiKeyAuth: [] }]);
+    expect(flat.security).toEqual([{ bearerAuth: [] }, { apiKeyAuth: [] }]);
     expect(flat.requestBody).toBeTruthy();
     expect(flat.responses?.['200']).toBeTruthy();
     expect(flat.responses?.['400']).toBeTruthy();
@@ -61,7 +66,7 @@ describe('OpenAPI / served docs', () => {
     };
     const relevance = spec.paths['/v1/relevance']?.post;
     expect(relevance).toBeTruthy();
-    expect(relevance.security).toEqual([{ apiKeyAuth: [] }]);
+    expect(relevance.security).toEqual([{ bearerAuth: [] }, { apiKeyAuth: [] }]);
     expect(relevance.requestBody).toBeTruthy();
     expect(relevance.responses?.['200']).toBeTruthy();
     expect(relevance.responses?.['403']).toBeTruthy();

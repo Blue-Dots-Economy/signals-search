@@ -26,7 +26,8 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
         'an allowed interaction (interaction matrix, cross-network included), and both items must ' +
         'be live + indexed with embeddings from the same model version. Score only — no ' +
         'band/confidence/reasoning.',
-      security: [{ apiKeyAuth: [] }],
+      // An array of alternatives: EITHER credential authenticates the call.
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       body: RelevanceRequestSchema,
       response: {
         200: RelevanceResponseSchema,

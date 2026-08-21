@@ -187,7 +187,8 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
       description:
         'Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, ' +
         'spatial, and filters. Ranking: cosine similarity (text/anchor) → distance (spatial) → recency.',
-      security: [{ apiKeyAuth: [] }],
+      // An array of alternatives: EITHER credential authenticates the call.
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       body: SearchRequestSchema,
       response: SEARCH_RESPONSES,
     },
@@ -212,7 +213,8 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
         'values may all be strings. Leaves are JSON-parsed to restore real types, then ' +
         'validated against the canonical schema. Numeric-looking filter values are parsed ' +
         'as numbers; send a JSON-quoted string (e.g. "\\"560001\\"") to keep one a string.',
-      security: [{ apiKeyAuth: [] }],
+      // An array of alternatives: EITHER credential authenticates the call.
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       // Permissive body: the flat shape can't be described by SearchRequestSchema,
       // so we accept any object here and validate after unflattening.
       body: FlatSearchRequestSchema,
