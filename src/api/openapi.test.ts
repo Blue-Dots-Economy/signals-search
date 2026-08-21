@@ -16,7 +16,7 @@ const deps = {
 } as ApiDeps;
 
 describe('OpenAPI / served docs', () => {
-  it('documents POST /v1/search with apiKey security and request/response schemas', async () => {
+  it('documents POST /v1/search with bearer + apiKey security and request/response schemas', async () => {
     const app = buildServer({ deps });
     await app.ready();
     const spec = app.swagger() as {
@@ -58,7 +58,7 @@ describe('OpenAPI / served docs', () => {
     await app.close();
   });
 
-  it('documents POST /v1/relevance with apiKey security and request/response schemas', async () => {
+  it('documents POST /v1/relevance with bearer + apiKey security and request/response schemas', async () => {
     const app = buildServer({ deps });
     await app.ready();
     const spec = app.swagger() as {
