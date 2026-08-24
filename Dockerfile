@@ -8,7 +8,8 @@
 # none of them, so no RUN is possible past that FROM.
 # debian12 (not debian13) to match the previous bookworm-slim base exactly:
 # bookworm IS Debian 12, so this keeps the same glibc/Debian generation.
-FROM dhi.io/node:24-debian12-dev AS base
+# dhi.io/node:24-debian12-dev
+FROM dhi.io/node@sha256:8a2fc47ac489c577c3695343f29b8793755ca03ad9ca9f50c30a8bbc267acb97 AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN corepack enable
 WORKDIR /app
@@ -30,7 +31,8 @@ RUN pnpm install --frozen-lockfile --prod
 # Hardened runtime: no shell, no apt, no npm/corepack. Nothing here needs them —
 # this stage was already COPY-only, and `USER node` (uid 1000) is the image's own
 # built-in user, matching the runAsUser the deploy charts set for search.
-FROM dhi.io/node:24-debian12 AS runtime
+# dhi.io/node:24-debian12
+FROM dhi.io/node@sha256:19c211d48e7051e192278c979d73118e22059560a4c2ff0a0c1d403bf8a8b05b AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
