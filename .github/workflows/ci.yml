@@ -34,7 +34,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.0.0
 
@@ -43,8 +43,15 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # --ignore-scripts: no dependency lifecycle script is needed to build or
+      # test this service. pnpm 10 already blocks them by default (cpu-features,
+      # esbuild, protobufjs and ssh2 are reported as ignored on every install and
+      # nothing depends on them having run — esbuild resolves its binary from the
+      # @esbuild/<platform> optional package, and ssh2 falls back to pure JS), so
+      # this makes the existing behaviour explicit rather than relying on a pnpm
+      # default. There is no root pre/post-install script to preserve either.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Typecheck
         run: pnpm typecheck
@@ -110,7 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # The DHI base layers in the Dockerfile come from dhi.io, which refuses
       # anonymous pulls even for the free Apache-2.0 catalog. Without this the
@@ -128,7 +135,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/blue-dots-economy/signals-search
           # `type=raw,value=develop` MUST stay gated on the develop branch. It was
@@ -146,7 +153,7 @@ jobs:
             type=ref,event=tag
             type=sha
 
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         id: build
         with:
           context: .

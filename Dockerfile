@@ -15,9 +15,13 @@ RUN corepack enable
 WORKDIR /app
 
 # --- build: full deps + tsc -> dist (includes copied migration SQL) ---
+# --ignore-scripts on both installs: nothing here needs a dependency lifecycle
+# script. pnpm 10 blocks them by default anyway (cpu-features, esbuild,
+# protobufjs, ssh2), and the runtime dependency set is pure JS, so no explicit
+# rebuild step is required afterwards.
 FROM base AS build
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN pnpm build
@@ -25,7 +29,7 @@ RUN pnpm build
 # --- prod-deps: production-only node_modules ---
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --prod
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
 # --- runtime ---
 # Hardened runtime: no shell, no apt, no npm/corepack. Nothing here needs them —
