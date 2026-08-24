@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import {
   extractBearerToken,
-  resetKeycloakJwksCache,
   verifyKeycloakToken,
   type KeycloakAuthConfig,
 } from './keycloak_token.js';
+
+/** Test seam, re-exported so route/auth tests need not import the token module. */
+export { resetKeycloakJwksCache as resetKeycloakJwksCacheForTests } from './keycloak_token.js';
 
 /** The caller identity `authenticateApiKey` resolves. Nothing downstream reads it. */
 export type ApiKeyCaller = { userId: string };
@@ -55,9 +57,6 @@ export async function authenticateApiKey(
   if (rows.length === 0 || !rows[0].user_id) return null;
   return { userId: rows[0].user_id };
 }
-
-/** Test seam, re-exported so route/auth tests need not import the token module. */
-export const resetKeycloakJwksCacheForTests = resetKeycloakJwksCache;
 
 /**
  * The one entry point every authenticated route uses.

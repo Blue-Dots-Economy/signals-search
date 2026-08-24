@@ -16,7 +16,8 @@ const envBool = (defaultValue: boolean) =>
 // render an unset value as `KEYCLOAK_BASE_URL=`, and a bare `z.string().url()`
 // would crash the boot on that — while the switch is documented as "leave it
 // unset". Blank and absent must therefore mean the same thing.
-const optionalUrl = () => z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional());
+// `z.url()` rather than `z.string().url()`: zod 4 deprecated the method form.
+const optionalUrl = () => z.preprocess((v) => (v === '' ? undefined : v), z.url().optional());
 
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -113,8 +114,16 @@ export type Config = {
  * otherwise become the issuer `https://a.example//realms/bluedots`, which no
  * token's `iss` can ever match — an all-401 deployment from a stray keystroke.
  * One helper for both URLs so it stays fixed in one place.
+ *
+ * Scanned backwards rather than with `/\/+$/`: an anchored `+` over a repeated
+ * character backtracks super-linearly, which is the same trap
+ * `extractBearerToken` avoids. This is O(n) and needs no regex engine at all.
  */
-const stripTrailingSlashes = (url: string) => url.replace(/\/+$/, '');
+const stripTrailingSlashes = (url: string) => {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === '/') end -= 1;
+  return url.slice(0, end);
+};
 
 /**
  * Resolve the authentication mode from env, failing fast rather than booting
