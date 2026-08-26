@@ -15,13 +15,16 @@ RUN corepack enable
 WORKDIR /app
 
 # --- build: full deps + tsc -> dist (includes copied migration SQL) ---
-# --ignore-scripts on both installs: nothing here needs a dependency lifecycle
-# script. pnpm 10 blocks them by default anyway (cpu-features, esbuild,
-# protobufjs, ssh2), and the runtime dependency set is pure JS, so no explicit
-# rebuild step is required afterwards.
+# Lifecycle scripts are blocked by `pnpm.onlyBuiltDependencies: []` in
+# package.json, NOT by a --ignore-scripts flag here. Same effect for the four
+# script-bearing packages in the tree (cpu-features, esbuild, protobufjs, ssh2 —
+# all dev-only), but declared in one place that every install honours: Docker,
+# CI, and a developer's laptop. The flag could not be overridden — a maintainer
+# who later needs a genuinely-native runtime dep (argon2, sharp) adds it to that
+# array and it builds everywhere, instead of being silently ignored here.
 FROM base AS build
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm install --frozen-lockfile
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN pnpm build
@@ -29,7 +32,7 @@ RUN pnpm build
 # --- prod-deps: production-only node_modules ---
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --prod --ignore-scripts
+RUN pnpm install --frozen-lockfile --prod
 
 # --- runtime ---
 # Hardened runtime: no shell, no apt, no npm/corepack. Nothing here needs them —
