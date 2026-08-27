@@ -1,10 +1,28 @@
 import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
 
+// Deliberately NOT String.localeCompare (which typescript:S2871 suggests): this
+// ordering feeds a SHA-256 cache key shared by every API replica, and
+// localeCompare is locale- and ICU-build-dependent, so two processes could hash
+// the same request differently and fragment the cache. Filter values are
+// `z.unknown()`, so arbitrary (incl. non-ASCII) object keys reach this sort.
+// Plain `<`/`>` on strings is UTF-16 code-unit order — byte-identical to the
+// previous bare .sort() for every input, so existing cache entries stay valid.
+function compareCodeUnits(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+function stableEntry(obj: Record<string, unknown>, key: string): string {
+  return `${JSON.stringify(key)}:${stableStringify(obj[key])}`;
+}
+
 function stableStringify(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
   if (v && typeof v === 'object') {
-    return `{${Object.keys(v as object).sort().map((k) => `${JSON.stringify(k)}:${stableStringify((v as Record<string, unknown>)[k])}`).join(',')}}`;
+    const obj = v as Record<string, unknown>;
+    const entries = Object.keys(obj).sort(compareCodeUnits).map((k) => stableEntry(obj, k));
+    return `{${entries.join(',')}}`;
   }
   return JSON.stringify(v);
 }

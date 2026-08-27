@@ -27,12 +27,114 @@ Signals write path ──enqueue──▶ Redis ──▶ ingestion worker ─�
 Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──▶ item_search ──join──▶ items (masked state)
 ```
 
+## How it works (start to finish)
+
+Two long-running processes share this repo and the same Signals Postgres database. They never talk to each other — their only coupling is the **`item_search` read-model table** (one row per indexed item: vector + geography + lifecycle). That is what makes the write side asynchronous and the read side fast.
+
+### Write path — indexing
+
+```mermaid
+flowchart LR
+  W[Signals item write] -->|enqueue item_key + op| S[(Redis Stream)]
+  S --> C[stream consumer]
+  SW[reconciliation sweep] --> I
+  C --> I[indexItem]
+  I -->|content hash unchanged| K[skip embed, advance source_updated_at]
+  I -->|changed| E[embed vectorized fields via TEI]
+  E --> U[(item_search: vector + geo + lifecycle)]
+  K --> U
+```
+
+1. **Enqueue.** Signals' write path pushes `{item_key, op}` onto a Redis Stream. The producer lives in Signals-DPG, not here.
+2. **Consume.** The worker reads batches with `XREADGROUP`, and recovers messages stranded by a dead consumer with `XAUTOCLAIM`.
+3. **Serialize + embed.** Only fields marked `vectorize` in `network.json` are concatenated and sent to the embedding service. **Private fields are never embedded** — a `private: true` field configured for vectorization makes the registry *throw* at boot rather than skip silently.
+4. **Upsert.** One row per `(item_network, item_domain, item_type, item_id)`, carrying the vector, a PostGIS geography, and `lifecycle_status`.
+5. **Reconcile.** A periodic sweep re-indexes anything where `items.updated_at` is newer than the version already indexed, and prunes rows whose `items` row has been deleted. This is what catches direct DB writes and migrations that never went through the queue.
+
+**Idempotency is the load-bearing property.** `indexItem` compares a content hash and skips re-embedding when nothing changed, so re-delivery, reclaim and sweep re-runs are all safe to repeat. An item with no vectorizable content is stored with a `NULL` vector rather than being rejected — it stays geo- and filter-searchable.
+
+Internals — poison-message/DLQ handling, sweep isolation, and why the hash covers location and lifecycle — are in **[`src/ingest/README.md`](src/ingest/README.md)**.
+
+### Read path — querying
+
+```mermaid
+sequenceDiagram
+  participant Caller
+  participant API as query API
+  participant R as Redis
+  participant PG as Postgres
+  Caller->>API: POST /v1/search (x-api-key)
+  API->>API: auth + served-domain / interaction scope
+  alt anchor search (intent.item.id)
+    API->>PG: read the anchor's stored vector
+  else free text (intent.textSearch)
+    API->>API: embed the query via TEI
+  end
+  API->>PG: filter (live-only + geo + item_state), then rank by cosine
+  opt rerank enabled
+    API->>API: cross-encoder re-scores the top N
+  end
+  API->>R: cache the result page
+  API-->>Caller: ranked hits + meta
+```
+
+1. **Authenticate.** `x-api-key`, validated against Signals' existing key store. A key must be enabled, unexpired, and not out of quota.
+2. **Scope.** The caller's served domain, plus the **interaction matrix** from `network.json` for anchor searches — an anchor in another domain is only visible if `anchorDomain → contextDomain` is an allowed interaction, otherwise `403`. This is the real authorization boundary, not the API-key layer.
+3. **Get a query vector.** Anchor search reads the item's *stored* vector (no embedding call — the fast path). Free-text embeds the query at request time, on every request: only result *pages* are cached, not query embeddings.
+4. **Filter, then rank.** Hard filters run first — `lifecycle_status = 'live'`, PostGIS `ST_DWithin`, and structured `item_state` filters — and only the survivors are ranked by cosine distance. Filtering before ranking is why a narrow query stays cheap.
+5. **Optionally rerank.** A cross-encoder can re-score the top results (off by default; see below).
+6. **Cache + return.** The result page is cached in Redis for a short TTL. Each hit carries the **whole item row**, so a caller never needs a follow-up fetch.
+
+### How relevance is computed
+
+Every indexed item is turned into a **vector** — a list of numbers positioning it in a space where "similar meaning" means "geometrically close". Relevance is the **cosine** of the angle between two vectors: `1.0` = same direction (as similar as the model can tell), `0` = unrelated. Only the *angle* matters, not length, so a short profile and a long one are compared fairly.
+
+Two models can be involved:
+
+| stage | model | what it does | cost |
+|---|---|---|---|
+| **Rank** (always) | bi-encoder — BGE-M3 | Items and query are embedded *independently*; ranking is a vector-distance lookup Postgres can index (HNSW) | cheap, precomputed at write |
+| **Rerank** (optional) | cross-encoder — `bge-reranker-v2-m3` | Reads query and item *together* and scores the pair directly. More accurate, but cannot be precomputed or indexed | one model call per candidate |
+
+Hence the shape of the system: the bi-encoder narrows thousands of items to a shortlist, and the cross-encoder — when enabled — reorders only that shortlist. Reranking is **off by default** (`RERANK_DEFAULT`).
+
+### Limits and defaults
+
+All are env-configurable; these are the shipped defaults.
+
+| behaviour | default | env |
+|---|---|---|
+| results per page | 20 (max **100**) | request `limit` / `offset` |
+| candidates a reranker sees | 50 — precisely `max(limit, RESULT_TOPN)` | `RESULT_TOPN` |
+| result cache TTL | 45s | `CACHE_TTL_SECONDS` |
+| reranking | off | `RERANK_DEFAULT` |
+| geo radius when `distanceMeters` is omitted | 30 km | `SEARCH_DEFAULT_DISTANCE_METERS` |
+| embedding dimension | 1024, fixed at the column | `EMBEDDING_DIM` |
+
+Two guarantees worth stating outright: **live-only** — non-`live` items are never returned; and **PII-safe** — private attributes are never embedded and results carry the masked `item_state`.
+
+### Glossary
+
+| term | meaning |
+|---|---|
+| **network** | A deployment's whole graph, e.g. `blue_dot`. Search never crosses networks, except `/v1/relevance`. |
+| **domain** | A participant kind within a network — `seeker`, `provider`, `aggregator`. |
+| **item** | One record: a profile, a job posting. Identified by `(network, domain, type, id)`. |
+| **item_search** | The read-model table this service owns: vector + geography + lifecycle, one row per item. |
+| **anchor** | An existing item used as the query — "find items relevant to *this* one". No embedding call. |
+| **interaction matrix** | The `network.json` rules for which domain may see which. Enforced on anchor search. |
+| **vectorize fields** | The `network.json` list of public attributes fed to the embedder. Private fields are rejected. |
+| **bi-encoder / cross-encoder** | See the relevance table above. |
+| **sweep** | The periodic reconciliation pass that catches anything the queue missed. |
+
+**Where to read next:** [`docs/2026-06-09-signals-search-engine-architecture.md`](docs/2026-06-09-signals-search-engine-architecture.md) for component and latency detail, [`docs/2026-06-09-signals-search-engine-design.md`](docs/2026-06-09-signals-search-engine-design.md) for the decisions and their rationale, and `src/api/schemas.ts` (published at `/documentation`) as the contract's source of truth.
+
 ## Stack
 
 - **TypeScript (ESM, NodeNext) + Fastify + Zod**
 - **[postgres.js](https://github.com/porsager/postgres)** for DB access (parameterized `sql` templates — no ORM layer)
 - **PostgreSQL** with `pgvector` (similarity) and `postgis` (geospatial), on the shared Signals-DPG database
-- **Redis** (shared) — ingestion queue + result/embedding cache
+- **Redis** (shared) — ingestion queue + result cache
 - **Embedding & reranking via HuggingFace TEI** (in-cluster, OpenAI-compatible) — OSS default **BGE-M3** (Apache-2.0, 1024-dim) for embeddings + optional **bge-reranker-v2-m3** cross-encoder; hosted APIs (Gemini/OpenAI/Voyage) opt-in via config base_url. Output dimension ≤ 2000 for HNSW indexing
 
 ## Key design points
