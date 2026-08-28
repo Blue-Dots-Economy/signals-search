@@ -17,6 +17,7 @@ import type { Embedder } from '../embedding/provider.js';
 import type { NetworkRegistry } from '../config/network_registry.js';
 import { registerSearchRoute } from './search_route.js';
 import { registerRelevanceRoute } from './relevance_route.js';
+import type { AuthConfig } from './auth.js';
 
 /**
  * Runs a dependency check with a hard timeout, collapsing any failure (rejection
@@ -51,6 +52,8 @@ export type ApiDeps = {
   cacheTtlSeconds: number;
   embeddingDim: number;
   defaultDistanceMeters: number;
+  /** Required on purpose: no caller can boot the API unauthenticated by omission. */
+  auth: AuthConfig;
 };
 
 export type ApiReferenceOptions = { enabled: boolean; publicBaseUrl?: string };
@@ -107,7 +110,9 @@ export function buildServer(opts: {
           version: pkg.version,
           description:
             'V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + ' +
-            'structured search over the shared Signals database. Auth: x-api-key header.',
+            'structured search over the shared Signals database. Auth: a Keycloak ' +
+            'client-credentials bearer token (Authorization: Bearer <token>), or the ' +
+            'legacy x-api-key header while the dual-accept migration window is open.',
         },
         // The services are self-hosted per network instance, so the "public"
         // URL is deployment-specific; the localhost entry covers the local
@@ -127,6 +132,9 @@ export function buildServer(opts: {
           : {}),
         components: {
           securitySchemes: {
+            // Either credential is accepted while the dual-accept window is
+            // open (AUTH_ACCEPT_API_KEY); bearer is the target state (#108).
+            bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
             apiKeyAuth: { type: 'apiKey', in: 'header', name: 'x-api-key' },
           },
         },

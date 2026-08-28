@@ -3,10 +3,15 @@
   "info": {
     "title": "Signals Search API",
     "version": "0.1.0",
-    "description": "V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + structured search over the shared Signals database. Auth: x-api-key header."
+    "description": "V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + structured search over the shared Signals database. Auth: a Keycloak client-credentials bearer token (Authorization: Bearer <token>), or the legacy x-api-key header while the dual-accept migration window is open."
   },
   "components": {
     "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
       "apiKeyAuth": {
         "type": "apiKey",
         "in": "header",
@@ -307,318 +312,8 @@
         },
         "security": [
           {
-            "apiKeyAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "context": {
-                      "type": "object",
-                      "properties": {
-                        "version": {
-                          "default": "1.0.0",
-                          "type": "string"
-                        },
-                        "messageId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "timestamp": {
-                          "type": "string"
-                        },
-                        "networkId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "domain": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "itemType": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "version",
-                        "messageId",
-                        "networkId",
-                        "domain",
-                        "itemType"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "message": {
-                      "type": "object",
-                      "properties": {
-                        "items": {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "item_network": {
-                                "type": "string"
-                              },
-                              "item_domain": {
-                                "type": "string"
-                              },
-                              "item_type": {
-                                "type": "string"
-                              },
-                              "item_id": {
-                                "type": "string"
-                              },
-                              "item_state": {
-                                "type": "object",
-                                "additionalProperties": {}
-                              },
-                              "item_locations": {
-                                "type": "array",
-                                "items": {
-                                  "type": "object",
-                                  "properties": {
-                                    "lat": {
-                                      "type": "number"
-                                    },
-                                    "lng": {
-                                      "type": "number"
-                                    },
-                                    "label": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "lat",
-                                    "lng"
-                                  ],
-                                  "additionalProperties": false
-                                }
-                              },
-                              "item_instance_url": {
-                                "nullable": true,
-                                "type": "string"
-                              },
-                              "item_schema_url": {
-                                "nullable": true,
-                                "type": "string"
-                              },
-                              "created_at": {
-                                "type": "string"
-                              },
-                              "updated_at": {
-                                "type": "string"
-                              },
-                              "created_by": {
-                                "nullable": true,
-                                "type": "string"
-                              },
-                              "lifecycle_status": {
-                                "type": "string"
-                              },
-                              "score": {
-                                "type": "number"
-                              },
-                              "distanceMeters": {
-                                "type": "number"
-                              }
-                            },
-                            "required": [
-                              "item_network",
-                              "item_domain",
-                              "item_type",
-                              "item_id",
-                              "item_state",
-                              "item_locations",
-                              "item_instance_url",
-                              "item_schema_url",
-                              "created_at",
-                              "updated_at",
-                              "created_by",
-                              "lifecycle_status"
-                            ],
-                            "additionalProperties": false
-                          }
-                        },
-                        "meta": {
-                          "type": "object",
-                          "properties": {
-                            "total": {
-                              "type": "number"
-                            },
-                            "limit": {
-                              "type": "number"
-                            },
-                            "offset": {
-                              "type": "number"
-                            }
-                          },
-                          "required": [
-                            "total",
-                            "limit",
-                            "offset"
-                          ],
-                          "additionalProperties": false
-                        }
-                      },
-                      "required": [
-                        "items",
-                        "meta"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "required": [
-                    "context",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
+            "bearerAuth": []
           },
-          "400": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/search/flat": {
-      "post": {
-        "summary": "Flattened search for one-level-only tool integrations (e.g. Raya)",
-        "tags": [
-          "search"
-        ],
-        "description": "Same search as POST /v1/search, but the body is a FLAT object whose keys are dot-delimited canonical paths (a numeric segment is an array index) and whose values may all be strings. Leaves are JSON-parsed to restore real types, then validated against the canonical schema. Numeric-looking filter values are parsed as numbers; send a JSON-quoted string (e.g. \"\\\"560001\\\"\") to keep one a string.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "security": [
           {
             "apiKeyAuth": []
           }
@@ -909,6 +604,368 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search/flat": {
+      "post": {
+        "summary": "Flattened search for one-level-only tool integrations (e.g. Raya)",
+        "tags": [
+          "search"
+        ],
+        "description": "Same search as POST /v1/search, but the body is a FLAT object whose keys are dot-delimited canonical paths (a numeric segment is an array index) and whose values may all be strings. Leaves are JSON-parsed to restore real types, then validated against the canonical schema. Numeric-looking filter values are parsed as numbers; send a JSON-quoted string (e.g. \"\\\"560001\\\"\") to keep one a string.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "context": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "default": "1.0.0",
+                          "type": "string"
+                        },
+                        "messageId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "timestamp": {
+                          "type": "string"
+                        },
+                        "networkId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "domain": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "itemType": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "messageId",
+                        "networkId",
+                        "domain",
+                        "itemType"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "message": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "item_network": {
+                                "type": "string"
+                              },
+                              "item_domain": {
+                                "type": "string"
+                              },
+                              "item_type": {
+                                "type": "string"
+                              },
+                              "item_id": {
+                                "type": "string"
+                              },
+                              "item_state": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              },
+                              "item_locations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "lat": {
+                                      "type": "number"
+                                    },
+                                    "lng": {
+                                      "type": "number"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "lat",
+                                    "lng"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "item_instance_url": {
+                                "nullable": true,
+                                "type": "string"
+                              },
+                              "item_schema_url": {
+                                "nullable": true,
+                                "type": "string"
+                              },
+                              "created_at": {
+                                "type": "string"
+                              },
+                              "updated_at": {
+                                "type": "string"
+                              },
+                              "created_by": {
+                                "nullable": true,
+                                "type": "string"
+                              },
+                              "lifecycle_status": {
+                                "type": "string"
+                              },
+                              "score": {
+                                "type": "number"
+                              },
+                              "distanceMeters": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "item_network",
+                              "item_domain",
+                              "item_type",
+                              "item_id",
+                              "item_state",
+                              "item_locations",
+                              "item_instance_url",
+                              "item_schema_url",
+                              "created_at",
+                              "updated_at",
+                              "created_by",
+                              "lifecycle_status"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "meta": {
+                          "type": "object",
+                          "properties": {
+                            "total": {
+                              "type": "number"
+                            },
+                            "limit": {
+                              "type": "number"
+                            },
+                            "offset": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "total",
+                            "limit",
+                            "offset"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "meta"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "context",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
           }
         }
       }
@@ -993,6 +1050,9 @@
           }
         },
         "security": [
+          {
+            "bearerAuth": []
+          },
           {
             "apiKeyAuth": []
           }
@@ -1110,6 +1170,29 @@
             }
           },
           "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
             "description": "Default Response",
             "content": {
               "application/json": {

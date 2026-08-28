@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse } from './schemas.js';
-import { authenticateApiKey } from './auth.js';
+import { requireCaller } from './require_caller.js';
 import { searchItems, type FilterClause } from '../db/search_query.js';
 import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
@@ -150,16 +150,8 @@ const SEARCH_RESPONSES = {
   403: ErrorSchema,
   404: ErrorSchema,
   422: ErrorSchema,
+  503: ErrorSchema,
 } as const;
-
-async function requireApiKey(deps: ApiDeps, apiKey: string | undefined, reply: FastifyReply): Promise<boolean> {
-  const caller = await authenticateApiKey(deps.sql, apiKey);
-  if (!caller) {
-    await reply.code(401).send({ error: 'UNAUTHORIZED', message: 'valid x-api-key required' });
-    return false;
-  }
-  return true;
-}
 
 export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
   app.withTypeProvider<ZodTypeProvider>().post('/v1/search', {
@@ -169,12 +161,13 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
       description:
         'Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, ' +
         'spatial, and filters. Ranking: cosine similarity (text/anchor) → distance (spatial) → recency.',
-      security: [{ apiKeyAuth: [] }],
+      // An array of alternatives: EITHER credential authenticates the call.
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       body: SearchRequestSchema,
       response: SEARCH_RESPONSES,
     },
   }, async (request, reply) => {
-    if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
+    if (!(await requireCaller(deps, request, reply))) return reply;
     // Body is already validated by the Zod route schema (type provider).
     return runSearch(reply, deps, request.body);
   });
@@ -194,14 +187,15 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
         'values may all be strings. Leaves are JSON-parsed to restore real types, then ' +
         'validated against the canonical schema. Numeric-looking filter values are parsed ' +
         'as numbers; send a JSON-quoted string (e.g. "\\"560001\\"") to keep one a string.',
-      security: [{ apiKeyAuth: [] }],
+      // An array of alternatives: EITHER credential authenticates the call.
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       // Permissive body: the flat shape can't be described by SearchRequestSchema,
       // so we accept any object here and validate after unflattening.
       body: FlatSearchRequestSchema,
       response: SEARCH_RESPONSES,
     },
   }, async (request, reply) => {
-    if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
+    if (!(await requireCaller(deps, request, reply))) return reply;
     // unflatten can throw on malformed input (an over-large array index, or a
     // key that both is a scalar and has children, e.g. {"a":"1","a.b":"2"}).
     // Map those to the same 400 the schema path returns — never a 500.

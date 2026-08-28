@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { RelevanceRequestSchema, RelevanceResponseSchema, ErrorSchema } from './schemas.js';
-import { authenticateApiKey } from './auth.js';
+import { requireCaller } from './require_caller.js';
 import { computeRelevance } from '../db/relevance_query.js';
 
 /**
@@ -26,7 +26,8 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
         'an allowed interaction (interaction matrix, cross-network included), and both items must ' +
         'be live + indexed with embeddings from the same model version. Score only — no ' +
         'band/confidence/reasoning.',
-      security: [{ apiKeyAuth: [] }],
+      // An array of alternatives: EITHER credential authenticates the call.
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       body: RelevanceRequestSchema,
       response: {
         200: RelevanceResponseSchema,
@@ -35,13 +36,13 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
         403: ErrorSchema,
         404: ErrorSchema,
         409: ErrorSchema,
+        503: ErrorSchema,
       },
     },
   }, async (request, reply) => {
-    const caller = await authenticateApiKey(deps.sql, request.headers['x-api-key'] as string | undefined);
-    if (!caller) {
-      return reply.code(401).send({ error: 'UNAUTHORIZED', message: 'valid x-api-key required' });
-    }
+    // The SAME gate the search routes use (401/403/503 + the caller log line) —
+    // never re-inlined here, so a status can't drift between the two copies.
+    if (!(await requireCaller(deps, request, reply))) return reply;
 
     // Body is already validated by the Zod route schema (type provider).
     const { source, target } = request.body;

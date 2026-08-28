@@ -76,3 +76,100 @@ describe('loadConfig', () => {
     ).toBe('https://search.example.org');
   });
 });
+
+describe('loadConfig — auth', () => {
+  const base = {
+    DATABASE_URL: 'postgres://u:p@h:5432/db',
+    REDIS_URL: 'redis://h:6379',
+    EMBEDDING_BASE_URL: 'http://tei:8080/v1',
+    EMBEDDING_MODEL: 'BAAI/bge-m3',
+    EMBEDDING_DIM: '1024',
+    NETWORK_CONFIG_PATH: './test/fixtures/networks',
+  };
+
+  it('defaults to api-key-only when no Keycloak base url is set', () => {
+    const cfg = loadConfig(base);
+    expect(cfg.auth).toEqual({ acceptApiKey: true });
+  });
+
+  it('builds the issuer and jwks uri from the base url and realm', () => {
+    const cfg = loadConfig({
+      ...base,
+      KEYCLOAK_BASE_URL: 'https://auth.example.com/',
+      KEYCLOAK_SERVICE_CLIENT_IDS: 'signals-search, voice-dpg',
+    });
+    expect(cfg.auth.keycloak).toEqual({
+      issuer: 'https://auth.example.com/realms/bluedots',
+      jwksUri: 'https://auth.example.com/realms/bluedots/protocol/openid-connect/certs',
+      audience: 'signals-search',
+      serviceClientIds: ['signals-search', 'voice-dpg'],
+      jwksCacheMaxAgeMs: 600_000,
+      clockToleranceSeconds: 30,
+    });
+    expect(cfg.auth.acceptApiKey).toBe(true);
+  });
+
+  it('fetches the jwks from the internal base url when one is given', () => {
+    const cfg = loadConfig({
+      ...base,
+      KEYCLOAK_BASE_URL: 'https://auth.example.com',
+      KEYCLOAK_INTERNAL_BASE_URL: 'http://keycloak:8080',
+      KEYCLOAK_SERVICE_CLIENT_IDS: 'signals-search',
+    });
+    // iss is what the token carries (public); the fetch stays in-cluster.
+    expect(cfg.auth.keycloak?.issuer).toBe('https://auth.example.com/realms/bluedots');
+    expect(cfg.auth.keycloak?.jwksUri).toBe(
+      'http://keycloak:8080/realms/bluedots/protocol/openid-connect/certs',
+    );
+  });
+
+  it('treats an empty KEYCLOAK_BASE_URL as unset rather than crashing the boot', () => {
+    // How Helm/compose render an unset value; the switch is documented as
+    // "leave it unset", so blank must mean the same thing, not a boot failure.
+    const cfg = loadConfig({ ...base, KEYCLOAK_BASE_URL: '', KEYCLOAK_INTERNAL_BASE_URL: '' });
+    expect(cfg.auth).toEqual({ acceptApiKey: true });
+  });
+
+  it('strips repeated trailing slashes from the base url', () => {
+    // A doubled slash would yield `https://auth.example.com//realms/bluedots`,
+    // an issuer no token's `iss` can match.
+    const cfg = loadConfig({
+      ...base,
+      KEYCLOAK_BASE_URL: 'https://auth.example.com//',
+      KEYCLOAK_INTERNAL_BASE_URL: 'http://keycloak:8080//',
+      KEYCLOAK_SERVICE_CLIENT_IDS: 'signals-search',
+    });
+    expect(cfg.auth.keycloak?.issuer).toBe('https://auth.example.com/realms/bluedots');
+    expect(cfg.auth.keycloak?.jwksUri).toBe(
+      'http://keycloak:8080/realms/bluedots/protocol/openid-connect/certs',
+    );
+  });
+
+  it('refuses to boot with only the internal base url set', () => {
+    expect(() =>
+      loadConfig({ ...base, KEYCLOAK_INTERNAL_BASE_URL: 'http://keycloak:8080' }),
+    ).toThrow(/KEYCLOAK_BASE_URL/);
+  });
+
+  it('refuses to boot with Keycloak configured but no client allowlist', () => {
+    expect(() =>
+      loadConfig({ ...base, KEYCLOAK_BASE_URL: 'https://auth.example.com' }),
+    ).toThrow(/KEYCLOAK_SERVICE_CLIENT_IDS/);
+  });
+
+  it('refuses to boot with no authentication at all', () => {
+    expect(() => loadConfig({ ...base, AUTH_ACCEPT_API_KEY: 'false' })).toThrow(
+      /No authentication is configured/,
+    );
+  });
+
+  it('closes the dual-accept window when AUTH_ACCEPT_API_KEY is false', () => {
+    const cfg = loadConfig({
+      ...base,
+      KEYCLOAK_BASE_URL: 'https://auth.example.com',
+      KEYCLOAK_SERVICE_CLIENT_IDS: 'signals-search',
+      AUTH_ACCEPT_API_KEY: 'false',
+    });
+    expect(cfg.auth.acceptApiKey).toBe(false);
+  });
+});

@@ -5,11 +5,13 @@ import { runMigrations } from '../db/migrate.js';
 import { ItemSearchRepo } from '../db/item_search_repo.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
 import { buildServer } from './server.js';
+import { resetKeycloakJwksCacheForTests } from './auth.js';
+import { startJwksServer, type JwksHarness } from '../../test/support/jwks.js';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Sql } from 'postgres';
 import type { FastifyInstance } from 'fastify';
 
-let pg: StartedPostgreSqlContainer; let sql: Sql; let app: FastifyInstance;
+let pg: StartedPostgreSqlContainer; let sql: Sql; let app: FastifyInstance; let jwks: JwksHarness;
 const N = 1024;
 const RAW = 'sk_signals_relevance_test_key_abcdefghijklmnop';
 // purple_dot fixture allows: seeker -> provider (same-network "apply") and
@@ -38,9 +40,23 @@ beforeAll(async () => {
   await repo.upsert({ ...providerBase, item_id: PROV_OTHERMODEL, embedding: vec(1), locations: [], lifecycleStatus: 'live', modelVersion: 'other', contentHash: 'px' });
   await repo.upsert({ ...aggBase, item_id: AGG, embedding: vec(1), locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 'ag' });
   const registry = await loadNetworkRegistry('test/fixtures/networks');
-  app = buildServer({ deps: { sql, redis: noRedis, embedder: fakeEmbedder, registry, rerank: { model: 'r', defaultOn: false, topN: 50 }, cacheTtlSeconds: 0, embeddingDim: N, defaultDistanceMeters: 30000 } });
+  jwks = await startJwksServer();
+  app = buildServer({
+    deps: {
+      sql, redis: noRedis, embedder: fakeEmbedder, registry,
+      rerank: { model: 'r', defaultOn: false, topN: 50 }, cacheTtlSeconds: 0, embeddingDim: N, defaultDistanceMeters: 30000,
+      auth: {
+        acceptApiKey: true,
+        keycloak: {
+          issuer: jwks.issuer, jwksUri: jwks.jwksUri, audience: 'signals-search',
+          serviceClientIds: ['signals-search'], jwksCacheMaxAgeMs: 600_000,
+          clockToleranceSeconds: 0,
+        },
+      },
+    },
+  });
 });
-afterAll(async () => { await app?.close(); await sql?.end(); await pg?.stop(); });
+afterAll(async () => { await app?.close(); await sql?.end(); await pg?.stop(); await jwks?.close(); });
 
 const seekerRef = (id: string) => ({ network: 'purple_dot', domain: 'seeker', type: 'profile_1.0', id });
 const providerRef = (id: string) => ({ network: 'purple_dot', domain: 'provider', type: 'profile_1.0', id });
@@ -96,5 +112,49 @@ describe('POST /v1/relevance', () => {
   it('400 when id is not a uuid', async () => {
     const res = await app.inject({ method: 'POST', url: '/v1/relevance', headers: { 'x-api-key': RAW }, payload: { source: { network: 'purple_dot', domain: 'seeker', type: 'profile_1.0', id: 'not-a-uuid' }, target: providerRef(PROV_MATCH) } });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('scores a pair for a caller carrying a valid bearer token', async () => {
+    const token = await jwks.mint();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/relevance',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { source: seekerRef(SEEKER), target: providerRef(PROV_MATCH) },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  // This route shares one requireCaller with the search routes, so these two
+  // pin that the shared gate is actually reached here — the asymmetry that let
+  // a status drift in the old inlined copy ship green.
+  it('403s a valid token from a client that may not search', async () => {
+    const token = await jwks.mint({ azp: 'aggregator-dpg' });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/relevance',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { source: seekerRef(SEEKER), target: providerRef(PROV_MATCH) },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe('CLIENT_NOT_PERMITTED');
+  });
+
+  it('503s — not 401s — while the JWKS endpoint is down', async () => {
+    const token = await jwks.mint();
+    // jose memoises its key set per JWKS URL; without the reset, the earlier
+    // successful verification in this file would mean setFailing never causes a
+    // fetch and the outage path is never exercised.
+    resetKeycloakJwksCacheForTests();
+    jwks.setFailing(true);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/relevance',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { source: seekerRef(SEEKER), target: providerRef(PROV_MATCH) },
+    });
+    jwks.setFailing(false);
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe('AUTH_PROVIDER_UNAVAILABLE');
   });
 });

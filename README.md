@@ -24,7 +24,7 @@ The Signals item write path enqueues changes to Redis → an **ingestion worker*
 
 ```
 Signals write path ──enqueue──▶ Redis ──▶ ingestion worker ──embed──▶ item_search (pgvector + PostGIS)
-Voice bot ──x-api-key──▶ POST /v1/search ──filter + ANN rank──▶ item_search ──join──▶ items (masked state)
+Voice bot ──Bearer token──▶ POST /v1/search ──filter + ANN rank──▶ item_search ──join──▶ items (masked state)
 ```
 
 ## How it works (start to finish)
@@ -144,7 +144,7 @@ Two guarantees worth stating outright: **live-only** — non-`live` items are ne
 - **PII-safe.** Only public (non-`private`) attributes are vectorized; `item_private_state` is never decrypted for embedding; results return masked state.
 - **Full item in each result (#87).** A hit returns the whole item row — `item_id` + masked `item_state` plus `item_instance_url`, `item_schema_url`, `created_at`/`updated_at`, `created_by`, and `lifecycle_status` — so callers don't need a follow-up fetch to hydrate a result.
 - **Live-only discovery.** Only `lifecycle_status = 'live'` items are returned.
-- **Authenticated.** `/v1/search` requires an API key, validated against Signals' existing key store.
+- **Authenticated.** `/v1/search`, `/v1/search/flat`, and `/v1/relevance` require a credential. Where `KEYCLOAK_BASE_URL` is set (bearer auth is **off** unless it is — unset is the shipped default, so a day-one deployment is api-key-only), that credential can be `Authorization: Bearer <token>` — a Keycloak client-credentials token, validated against the realm JWKS (signature, `iss`, `exp`/`nbf`, an asymmetric `alg`, and a `typ` that is not an ID token's). The realm is shared with Signals and the aggregator, so two further gates apply: the token must name `signals-search` in its `aud`, and the client that Keycloak says minted it (`azp`) must be listed in `KEYCLOAK_SERVICE_CLIENT_IDS`. Neither is a formality — a token minted for Signals is otherwise perfectly valid here. A `403 CLIENT_NOT_PERMITTED` means the token was good but the client is not allowed to search; a `503 AUTH_PROVIDER_UNAVAILABLE` means Keycloak could not be reached, and is retryable. While `AUTH_ACCEPT_API_KEY=true` (the default), the legacy `x-api-key` (validated against Signals' key store) is still accepted, so callers can migrate independently. With Keycloak configured, a request carrying a bearer token is judged on that token — it never falls back to the api key; with Keycloak unconfigured a stray `Authorization` header is simply ignored, so proxies that forward one keep working.
 
 ## Flattened search — `POST /v1/search/flat` (for one-level-only tool integrations)
 
@@ -160,7 +160,7 @@ Rules for the flat body:
 - **Use contiguous array indices from `0`.** A gap (e.g. `filters.0.*` and `filters.2.*` with no `filters.1.*`) leaves a hole in the rebuilt array and is rejected with `400 VALIDATION_ERROR`. Indices are capped (max 10,000) — a larger index is rejected with `400`, not silently expanded into a huge array.
 - Keys containing `__proto__`, `constructor`, or `prototype` segments are ignored (they are never valid canonical paths).
 
-Same auth (`x-api-key`), same responses, and the same `400 VALIDATION_ERROR` as `/v1/search` (raised after unflattening — including a malformed flat body, e.g. an over-large index or a key that is both a scalar and a parent). Worked examples, one per mode:
+Same auth as `/v1/search` — a bearer token (or `x-api-key` during the dual-accept window) — same responses, and the same `400 VALIDATION_ERROR` (raised after unflattening — including a malformed flat body, e.g. an over-large index or a key that is both a scalar and a parent). Worked examples, one per mode:
 
 ```jsonc
 // free-text
@@ -194,7 +194,7 @@ The live request/response schema is also published in the generated OpenAPI at `
 
 Where `/v1/search` ranks a corpus against a query, `/v1/relevance` scores **two specific items against each other**. Given two item references it returns a single relevance **percentage (0–100)** — the cosine similarity of their already-stored embeddings, scaled ×100 (higher = more similar). It performs no embedding call and no writes; both items must already be indexed in `item_search`.
 
-Same auth as search (`x-api-key`). Score only — no band/confidence/reasoning. The body is directional — `source` is scored **from**, `target` is scored **against** — and `source → target` (network + domain) must be an **allowed interaction** (interaction matrix, same gate as anchor search, **cross-network pairs included**). Both items must be **live** and embedded with the **same model version**.
+Same auth as search (a bearer token, or `x-api-key` during the dual-accept window). Score only — no band/confidence/reasoning. The body is directional — `source` is scored **from**, `target` is scored **against** — and `source → target` (network + domain) must be an **allowed interaction** (interaction matrix, same gate as anchor search, **cross-network pairs included**). Both items must be **live** and embedded with the **same model version**.
 
 ```jsonc
 // request — networks may differ (cross-network relevance is supported)
