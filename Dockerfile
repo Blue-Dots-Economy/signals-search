@@ -3,12 +3,25 @@
 # deployments select the entrypoint via `command` (node dist/worker/main.js or
 # node dist/api/main.js). Network configs are NOT baked in; they are mounted at
 # runtime via a ConfigMap (NETWORK_CONFIG_PATH).
-FROM node:24-bookworm-slim AS base
+# Build stages use the DHI *dev* variant — the only one carrying a shell, apt,
+# corepack and npm. The runtime stage below uses the hardened variant, which has
+# none of them, so no RUN is possible past that FROM.
+# debian12 (not debian13) to match the previous bookworm-slim base exactly:
+# bookworm IS Debian 12, so this keeps the same glibc/Debian generation.
+# dhi.io/node:24-debian12-dev
+FROM dhi.io/node@sha256:8a2fc47ac489c577c3695343f29b8793755ca03ad9ca9f50c30a8bbc267acb97 AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN corepack enable
 WORKDIR /app
 
 # --- build: full deps + tsc -> dist (includes copied migration SQL) ---
+# Lifecycle scripts are blocked by `pnpm.onlyBuiltDependencies: []` in
+# package.json, NOT by a --ignore-scripts flag here. Same effect for the four
+# script-bearing packages in the tree (cpu-features, esbuild, protobufjs, ssh2 —
+# all dev-only), but declared in one place that every install honours: Docker,
+# CI, and a developer's laptop. The flag could not be overridden — a maintainer
+# who later needs a genuinely-native runtime dep (argon2, sharp) adds it to that
+# array and it builds everywhere, instead of being silently ignored here.
 FROM base AS build
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
@@ -22,7 +35,11 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # --- runtime ---
-FROM node:24-bookworm-slim AS runtime
+# Hardened runtime: no shell, no apt, no npm/corepack. Nothing here needs them —
+# this stage was already COPY-only, and `USER node` (uid 1000) is the image's own
+# built-in user, matching the runAsUser the deploy charts set for search.
+# dhi.io/node:24-debian12
+FROM dhi.io/node@sha256:19c211d48e7051e192278c979d73118e22059560a4c2ff0a0c1d403bf8a8b05b AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
