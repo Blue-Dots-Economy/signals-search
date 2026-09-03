@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
-import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse } from './schemas.js';
+import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse, type SortMode } from './schemas.js';
 import { authenticateApiKey } from './auth.js';
 import { searchItems, type FilterClause } from '../db/search_query.js';
 import { serializeItemText } from '../ingest/serialize.js';
@@ -9,7 +9,9 @@ import { cacheKey, getCached, setCached } from './result_cache.js';
 import { TeiReranker } from '../rerank/reranker.js';
 import { unflatten } from './unflatten.js';
 
-export type SortMode = 'relevance' | 'newest' | 'nearest';
+// Re-exported from the wire schema rather than re-declared, so the decision
+// table and the accepted/reported values can never drift apart.
+export type { SortMode } from './schemas.js';
 
 /**
  * Resolve the ORDER the request will actually get. Pure and exported so the
@@ -131,6 +133,27 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     }
   }
 
+  // Contract §1.3 — centre resolution for `nearest`, first match wins:
+  // explicit orderingCenter > the spatial filter's own centre > the anchor's
+  // stored location. Independent of the area filter by design: with no spatial
+  // clause the candidate set stays network-wide while the order is
+  // nearest-first (#644). This is only a CANDIDATE — whether it reaches the
+  // query at all depends on the sort resolved below.
+  const oc = message.intent.orderingCenter;
+  const candidateCenter =
+    oc ? { lat: oc.coordinates[1], lng: oc.coordinates[0] }
+      : spatialParam ? { lat: spatialParam.lat, lng: spatialParam.lng }
+      : anchorLat != null && anchorLng != null ? { lat: anchorLat, lng: anchorLng }
+      : undefined;
+
+  const sortApplied: SortMode = resolveSort({
+    requested: message.intent.sort,
+    hasAnchor: !!message.intent.item?.id,
+    hasText: !!message.intent.textSearch,
+    hasCenter: !!candidateCenter,
+    hasSpatialFilter: !!spatialParam,
+  });
+
   const willRerank = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
   const topN = Math.max(pagination.limit, deps.rerank.topN);
   const { rows, total } = await searchItems(deps.sql, {
@@ -167,7 +190,7 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
         ...(r.score != null ? { score: Number(r.score.toFixed(4)) } : {}),
         ...(r.distanceMeters != null ? { distanceMeters: Math.round(r.distanceMeters) } : {}),
       })),
-      meta: { total, limit: pagination.limit, offset: pagination.offset },
+      meta: { total, limit: pagination.limit, offset: pagination.offset, sort_applied: sortApplied },
     },
   };
   await setCached(deps.redis, key, response, deps.cacheTtlSeconds);

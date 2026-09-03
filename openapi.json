@@ -267,6 +267,44 @@
                                 "value"
                               ]
                             }
+                          },
+                          "sort": {
+                            "type": "string",
+                            "enum": [
+                              "relevance",
+                              "newest",
+                              "nearest"
+                            ]
+                          },
+                          "orderingCenter": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "Point"
+                                ]
+                              },
+                              "coordinates": {
+                                "type": "array",
+                                "items": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ]
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "coordinates"
+                            ]
                           }
                         }
                       },
@@ -456,12 +494,21 @@
                             },
                             "offset": {
                               "type": "number"
+                            },
+                            "sort_applied": {
+                              "type": "string",
+                              "enum": [
+                                "relevance",
+                                "newest",
+                                "nearest"
+                              ]
                             }
                           },
                           "required": [
                             "total",
                             "limit",
-                            "offset"
+                            "offset",
+                            "sort_applied"
                           ],
                           "additionalProperties": false
                         }
@@ -769,12 +816,21 @@
                             },
                             "offset": {
                               "type": "number"
+                            },
+                            "sort_applied": {
+                              "type": "string",
+                              "enum": [
+                                "relevance",
+                                "newest",
+                                "nearest"
+                              ]
                             }
                           },
                           "required": [
                             "total",
                             "limit",
-                            "offset"
+                            "offset",
+                            "sort_applied"
                           ],
                           "additionalProperties": false
                         }

@@ -73,7 +73,7 @@ describe('POST /v1/search — anchor pagination with rerank enabled', () => {
     expect(res.statusCode).toBe(200);
     const j = res.json();
     expect(j.message.items).toHaveLength(2);
-    expect(j.message.meta).toEqual({ total: 3, limit: 2, offset: 0 });
+    expect(j.message.meta).toEqual({ total: 3, limit: 2, offset: 0, sort_applied: 'relevance' });
   });
 
   it('honors pagination.offset on the anchor path', async () => {
@@ -81,6 +81,6 @@ describe('POST /v1/search — anchor pagination with rerank enabled', () => {
     expect(res.statusCode).toBe(200);
     const j = res.json();
     expect(j.message.items).toHaveLength(1);
-    expect(j.message.meta).toEqual({ total: 3, limit: 2, offset: 2 });
+    expect(j.message.meta).toEqual({ total: 3, limit: 2, offset: 2, sort_applied: 'relevance' });
   });
 });

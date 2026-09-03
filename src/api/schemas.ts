@@ -35,6 +35,20 @@ const FilterClauseSchema = z.object({
   }
 });
 
+// Explicit ordering (#644). ABSENT is meaningful: it preserves the historical
+// inferred behaviour (cosine > distance > recency), so existing callers are
+// unaffected. See resolveSort in search_route.ts.
+export const SortModeSchema = z.enum(['relevance', 'newest', 'nearest']);
+export type SortMode = z.infer<typeof SortModeSchema>;
+
+// A centre used ONLY for ordering — it never produces a WHERE predicate.
+// Deliberately NOT subject to the anchorless-spatial refine below: an ordering
+// centre needs no anchor, because it filters nothing.
+const OrderingCenterSchema = z.object({
+  type: z.literal('Point'),
+  coordinates: z.tuple([z.number(), z.number()]), // GeoJSON order: [lng, lat]
+});
+
 export const IntentSchema = z.object({
   textSearch: z.string().min(1).optional(),
   // z.guid(), not z.uuid(): zod 4 tightened .uuid() to enforce the RFC 9562
@@ -49,6 +63,12 @@ export const IntentSchema = z.object({
   // rather than silently ignoring them.
   spatial: z.array(SpatialClauseSchema).max(1, 'at most one spatial clause is supported').optional(),
   filters: z.array(FilterClauseSchema).optional(),
+  // Both new fields live INSIDE intent, never on `message` beside pagination:
+  // cacheKey() hashes {networkId, domain, itemType, intent, pagination}, so
+  // placing them here makes the cache key cover them for free. Outside intent,
+  // two requests differing only in `sort` would share one cache entry.
+  sort: SortModeSchema.optional(),
+  orderingCenter: OrderingCenterSchema.optional(),
 }).superRefine((intent, ctx) => {
   // A spatial clause without `geometry` derives the search center from the
   // anchor item, so it requires `item.id`. Without an anchor there is no point
@@ -101,7 +121,15 @@ export const SearchResponseSchema = z.object({
   context: ContextSchema,
   message: z.object({
     items: z.array(ItemResultSchema),
-    meta: z.object({ total: z.number(), limit: z.number(), offset: z.number() }),
+    meta: z.object({
+      total: z.number(),
+      limit: z.number(),
+      offset: z.number(),
+      // Always present: the order actually applied after the contract §1.2
+      // fallbacks, so a client can never claim an order it did not get. When
+      // the request sent no `sort`, this names whichever inferred path ran.
+      sort_applied: SortModeSchema,
+    }),
   }),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
