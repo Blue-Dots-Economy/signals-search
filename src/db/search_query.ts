@@ -142,15 +142,26 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
   // slower and O(corpus). Forcing seqscan/hashjoin/mergejoin off does not
   // recover an HNSW plan; none exists.
   //
-  // The cost would also buy little: ties here need byte-identical embeddings
-  // (in practice only the embedding IS NULL tail), and because HNSW is
-  // approximate, differing LIMIT+OFFSET bounds can change which rows land in
-  // the candidate set at all — so ordering within a tie group cannot make
-  // relevance paging deterministic regardless. Deterministic paging is
-  // therefore a firm guarantee for `newest` and `nearest`, and best-effort for
-  // `relevance`. Distance and recency pay nothing: the geo path keeps the same
-  // Bitmap Index Scan on item_search_geo_gist with a byte-identical plan, and
-  // recency sorts either way.
+  // The cost would also buy almost nothing. A cosine tie needs byte-identical
+  // embeddings, and the HNSW traversal is deterministic for a fixed query
+  // vector, ef_search and index state — so even tied rows already come back in
+  // a stable order. Measured: five pages at limit 20 (offsets 0/20/40/100/200)
+  // with hnsw.ef_search=500 returned 100 distinct ids and zero overlap between
+  // any pair of pages, and a given page was byte-identical across repeat calls
+  // in one session and on a fresh connection.
+  //
+  // Distance and recency pay nothing for the tiebreaker: the geo path keeps the
+  // same Bitmap Index Scan on item_search_geo_gist with a byte-identical plan,
+  // and recency sorts either way.
+  //
+  // Separate, unrelated limitation worth knowing when reading relevance
+  // results: pgvector's hnsw.ef_search defaults to 40 with
+  // hnsw.iterative_scan off, and in that configuration the scan silently
+  // truncates — at limit 20 the pages above returned 20/20/20/0/0 rows while
+  // the count query still reported the full 20 500. That is a deployment
+  // config concern (`SET hnsw.iterative_scan = strict_order` returns complete
+  // pages to offset 1000+ with the index still used), not something this
+  // ORDER BY can address.
   const tiebreak = sql`s.item_id ASC`;
   // Recency means i.created_at, NOT item_search.indexed_at (spec D5 / P4): a
   // re-index or a backfill must not reshuffle the user-facing feed. The
