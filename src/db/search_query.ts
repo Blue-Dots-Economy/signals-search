@@ -1,12 +1,33 @@
 import type { Sql, PendingQuery, Row } from 'postgres';
 
 export type FilterClause = { op: 'eq' | 'neq' | 'in' | 'contains' | 'contains_any' | 'gt' | 'gte' | 'lt' | 'lte'; target: string; value: unknown };
+// Re-declared here rather than imported from the API layer: search_route.ts
+// imports from this module and never the reverse, and that direction is worth
+// preserving. The wire enum lives in api/schemas.ts.
+export type SortMode = 'relevance' | 'newest' | 'nearest';
+
 export type SearchParams = {
   item_network: string;
   item_domain: string;
   item_type: string;
   queryVector?: number[];
+  /** ST_DWithin FILTER — decides membership. Unchanged. */
   spatial?: { lat: number; lng: number; distanceMeters: number };
+  /**
+   * Centre used ONLY to ORDER. Never contributes a WHERE predicate, so
+   * `sort: 'nearest'` returns the whole candidate set nearest-first instead of
+   * truncating it (#644). When `spatial` is also set, the caller may pass its
+   * centre here too.
+   */
+  orderingCenter?: { lat: number; lng: number };
+  /**
+   * Resolved by the caller via resolveSort — never inferred here.
+   *
+   * OPTIONAL, and absent is meaningful: it selects the historical inferred
+   * ordering (cosine > distance > indexed_at recency) so a caller that sends no
+   * `sort` gets byte-identical behaviour to before #644.
+   */
+  sort?: SortMode;
   filters: FilterClause[];
   limit: number;
   offset: number;
@@ -84,11 +105,17 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
     : sql`NULL::float8`;
 
   // Distance expression reused in both SELECT and ORDER BY to avoid alias reference issues
-  // (a bare column alias cannot appear in the same SELECT's ORDER BY in Postgres subquery context)
-  const distExpr = p.spatial
+  // (a bare column alias cannot appear in the same SELECT's ORDER BY in Postgres subquery context).
+  //
+  // The ORDERING centre wins over the FILTER centre, per contract §1.3:
+  // `nearest` may be requested with no spatial filter at all. When only a
+  // spatial clause is present the filter's own centre is used, so an
+  // area-filtered search keeps emitting distanceMeters exactly as before.
+  const distCenter = p.orderingCenter ?? (p.spatial ? { lat: p.spatial.lat, lng: p.spatial.lng } : undefined);
+  const distExpr = distCenter
     ? sql`ST_Distance(
         s.geo,
-        ST_SetSRID(ST_MakePoint(${p.spatial.lng}, ${p.spatial.lat}), 4326)::geography
+        ST_SetSRID(ST_MakePoint(${distCenter.lng}, ${distCenter.lat}), 4326)::geography
       )::float8`
     : sql`NULL::float8`;
 
@@ -125,11 +152,42 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
   // Bitmap Index Scan on item_search_geo_gist with a byte-identical plan, and
   // recency sorts either way.
   const tiebreak = sql`s.item_id ASC`;
-  const orderBy = vecLiteral
-    ? sql`s.embedding <=> ${vecLiteral}::vector ASC`
-    : p.spatial
-      ? sql`${distExpr} ASC NULLS LAST, ${tiebreak}`
-      : sql`s.indexed_at DESC, ${tiebreak}`;
+  // Recency means i.created_at, NOT item_search.indexed_at (spec D5 / P4): a
+  // re-index or a backfill must not reshuffle the user-facing feed. The
+  // INFERRED path below is the one exception — it keeps indexed_at, because
+  // that is what it has always done and an absent `sort` must not change.
+  const byRecency = sql`i.created_at DESC, ${tiebreak}`;
+
+  let orderBy: PendingQuery<Row[]>;
+  if (p.sort === undefined) {
+    // No sort requested: today's inferred ordering, preserved exactly.
+    orderBy = vecLiteral
+      ? sql`s.embedding <=> ${vecLiteral}::vector ASC`
+      : p.spatial
+        ? sql`${distExpr} ASC NULLS LAST, ${tiebreak}`
+        : sql`s.indexed_at DESC, ${tiebreak}`;
+  } else {
+    switch (p.sort) {
+      case 'relevance':
+        // Degrades to recency when no vector was supplied. resolveSort should
+        // already have prevented that, so this is defence in depth, not a
+        // second decision point.
+        orderBy = vecLiteral
+          ? sql`s.embedding <=> ${vecLiteral}::vector ASC`
+          : byRecency;
+        break;
+      case 'nearest':
+        // No ST_DWithin is added by this sort — ordering by location must never
+        // truncate the candidate set (#644). Location-less rows sort last.
+        orderBy = distCenter
+          ? sql`${distExpr} ASC NULLS LAST, ${tiebreak}`
+          : byRecency;
+        break;
+      case 'newest':
+        orderBy = byRecency;
+        break;
+    }
+  }
 
   const raw = await sql<{
     item_network: string; item_domain: string; item_type: string; item_id: string;
