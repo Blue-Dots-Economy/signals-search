@@ -104,7 +104,13 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
   // applies here — the target is the caller-declared context.domain, already
   // gated by the served-domain check above, with no anchor source domain to
   // scope against.
-  if (!message.intent.item?.id && message.intent.textSearch) {
+  // #148: text and an anchor are NO LONGER mutually exclusive. With an anchor
+  // present its stored embedding remains the query vector (so relevance still
+  // explains the order) and the text is applied as a narrowing WHERE predicate
+  // in search_query.ts. Without an anchor, text becomes the query vector as
+  // before. Gating on `!queryVector` rather than on the anchor id keeps the
+  // embed call on the cache-MISS-only path it was always on.
+  if (!queryVector && message.intent.textSearch) {
     [queryVector] = await deps.embedder.embed([message.intent.textSearch]);
   }
 
@@ -173,6 +179,15 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     spatial: spatialParam,
     ...(requestedSort ? { sort: sortApplied } : {}),
     ...(requestedSort && sortApplied === 'nearest' ? { orderingCenter: candidateCenter } : {}),
+    // #148: narrow on the same fields that define semantic relevance. `.path`
+    // because vectorizeFields returns {path, weight}, and the weights only
+    // matter for serialization/reranking, not for a match predicate.
+    ...(message.intent.textSearch
+      ? {
+          textSearch: message.intent.textSearch,
+          textSearchFields: deps.registry.vectorizeFields(networkId, domain, itemType).map((f) => f.path),
+        }
+      : {}),
     filters: (message.intent.filters ?? []) as FilterClause[],
     limit: willRerank ? topN : pagination.limit,
     offset: willRerank ? 0 : pagination.offset,

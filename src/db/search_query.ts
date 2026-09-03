@@ -28,6 +28,16 @@ export type SearchParams = {
    * `sort` gets byte-identical behaviour to before #644.
    */
   sort?: SortMode;
+  /**
+   * #148: applied as an additional value-match WHERE predicate, ANDed with
+   * everything else — NOT as a competing query vector. So text narrows while
+   * an anchor's embedding still ranks. Matched against the `vectorize: true`
+   * fields, so narrowing and cosine ranking describe the same content (and a
+   * `private` field can never be in that set — vectorizeFields throws on one).
+   */
+  textSearch?: string;
+  /** The `vectorize: true` field names, from registry.vectorizeFields(). */
+  textSearchFields?: string[];
   filters: FilterClause[];
   limit: number;
   offset: number;
@@ -75,6 +85,21 @@ function filterFragment(sql: Sql, f: FilterClause): PendingQuery<Row[]> {
   }
 }
 
+// OR across the vectorize fields, ANDed into the WHERE. Runs against
+// i.item_state — item_search stores no serialized text, and the `JOIN items i`
+// is already present. Field names are BOUND as parameters to `->>`, never
+// interpolated, matching filterFragment.
+//
+// Known looseness (accepted, contract §4): for an array-valued field, `->>'f'`
+// yields the serialized JSON array as text (e.g. ["solar","wind"]), so ILIKE
+// matches against that text form. Fine for a narrowing predicate.
+function textFragment(sql: Sql, q: string, fields: string[]): PendingQuery<Row[]> | undefined {
+  if (fields.length === 0) return undefined;
+  const like = `%${q}%`;
+  const parts = fields.map((f) => sql`COALESCE(i.item_state->>${f}, '') ILIKE ${like}`);
+  return parts.reduce((acc, part, i) => (i === 0 ? part : sql`${acc} OR ${part}`), parts[0]);
+}
+
 export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: SearchRow[]; total: number }> {
   const vecLiteral = p.queryVector ? `[${p.queryVector.join(',')}]` : null;
 
@@ -84,6 +109,10 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
     sql`s.item_network = ${p.item_network} AND s.item_domain = ${p.item_domain} AND s.item_type = ${p.item_type}`,
   ];
   for (const f of p.filters) conds.push(filterFragment(sql, f));
+  if (p.textSearch && p.textSearchFields?.length) {
+    const frag = textFragment(sql, p.textSearch, p.textSearchFields);
+    if (frag) conds.push(sql`(${frag})`);
+  }
   if (p.spatial) {
     conds.push(sql`ST_DWithin(
       s.geo,
