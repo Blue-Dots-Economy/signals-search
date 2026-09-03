@@ -84,9 +84,10 @@ beforeAll(async () => {
     state: Record<string, unknown>,
     locations: { lat: number; lng: number }[],
     seedVec: number,
+    createdAt: string,
   ) => {
-    await sql`INSERT INTO items (item_network, item_domain, item_type, item_id, item_state, item_locations)
-      VALUES (${net}, ${domain}, 'profile_1.0', ${id}, ${jsonb(state)}, ${jsonb(locations)})`;
+    await sql`INSERT INTO items (item_network, item_domain, item_type, item_id, item_state, item_locations, created_at)
+      VALUES (${net}, ${domain}, 'profile_1.0', ${id}, ${jsonb(state)}, ${jsonb(locations)}, ${createdAt}::timestamptz)`;
     await repo.upsert({
       item_network: net, item_domain: domain, item_type: 'profile_1.0', item_id: id,
       embedding: oneHot(seedVec), locations, lifecycleStatus: 'live',
@@ -94,11 +95,13 @@ beforeAll(async () => {
     });
   };
 
-  await seed(P_NEAR, 'provider', { service_details: 'solar installation' }, [{ lat: 12.98, lng: 77.59 }], 1);
-  await seed(P_FAR, 'provider', { service_details: 'solar rooftop retrofit' }, [{ lat: 28.61, lng: 77.21 }], 2);
-  await seed(P_NOLOC, 'provider', { service_details: 'borewell drilling' }, [], 3);
+  // created_at is explicit so `newest` has a defined expected order:
+  // P_NOLOC (Mar) is newest, then P_FAR (Feb), then P_NEAR (Jan).
+  await seed(P_NEAR, 'provider', { service_details: 'solar installation' }, [{ lat: 12.98, lng: 77.59 }], 1, '2026-01-01T00:00:00Z');
+  await seed(P_FAR, 'provider', { service_details: 'solar rooftop retrofit' }, [{ lat: 28.61, lng: 77.21 }], 2, '2026-02-01T00:00:00Z');
+  await seed(P_NOLOC, 'provider', { service_details: 'borewell drilling' }, [], 3, '2026-03-01T00:00:00Z');
   // seeker → provider is a permitted interaction in the purple_dot fixture.
-  await seed(ANCHOR, 'seeker', { needs: 'solar installation' }, [{ lat: 12.97, lng: 77.59 }], 1);
+  await seed(ANCHOR, 'seeker', { needs: 'solar installation' }, [{ lat: 12.97, lng: 77.59 }], 1, '2026-01-01T00:00:00Z');
 }, 180_000);
 
 afterAll(async () => { await harness?.stop(); });
@@ -160,5 +163,39 @@ describe('route — meta.sort_applied (contract §2)', () => {
     const body = await search({ item: { id: ANCHOR } });
     expect(body.message.meta.sort_applied).toBe('relevance');
     expect(body.message.items.every((i) => i.distanceMeters === undefined)).toBe(true);
+  });
+});
+
+describe('route — the applied sort actually orders the results (contract §3)', () => {
+  it('nearest returns the FAR row too: ordering by location must not truncate', async () => {
+    const body = await search({ sort: 'nearest', orderingCenter: { type: 'Point', coordinates: CENTRE } });
+    const ids = body.message.items.map((i) => i.item_id);
+    // P_FAR is ~1740 km out, far beyond the 30 km default radius a filter
+    // would have applied. It must still be present, and ordered after P_NEAR.
+    expect(ids).toContain(P_FAR);
+    expect(ids.indexOf(P_NEAR)).toBeLessThan(ids.indexOf(P_FAR));
+    expect(body.message.meta.total).toBe(3);
+    expect(body.message.items.some((i) => (i.distanceMeters ?? 0) > 1_000_000)).toBe(true);
+  });
+
+  it('nearest puts the location-less row last', async () => {
+    const body = await search({ sort: 'nearest', orderingCenter: { type: 'Point', coordinates: CENTRE } });
+    const ids = body.message.items.map((i) => i.item_id);
+    expect(ids[ids.length - 1]).toBe(P_NOLOC);
+  });
+
+  it('newest orders by created_at DESC', async () => {
+    const body = await search({ sort: 'newest' });
+    expect(body.message.items.map((i) => i.item_id)).toEqual([P_NOLOC, P_FAR, P_NEAR]);
+  });
+
+  it('a spatial FILTER still truncates while nearest orders', async () => {
+    // spatial keeps its meaning: it filters. Only P_NEAR is within 30 km.
+    const body = await search({
+      sort: 'nearest',
+      spatial: [{ op: 's_dwithin', geometry: { type: 'Point', coordinates: CENTRE }, distanceMeters: 30000 }],
+    });
+    expect(body.message.items.map((i) => i.item_id)).toEqual([P_NEAR]);
+    expect(body.message.meta.sort_applied).toBe('nearest');
   });
 });

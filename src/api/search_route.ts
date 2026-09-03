@@ -156,10 +156,23 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
 
   const willRerank = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
   const topN = Math.max(pagination.limit, deps.rerank.topN);
+  // The centre reaches the query ONLY when the applied sort actually orders by
+  // distance. Otherwise it would populate the SELECT's distance expression and
+  // start emitting distanceMeters on every anchor search — a silent wire change
+  // for callers that never asked for a location. A spatial FILTER still
+  // supplies its own centre inside search_query, so area-filtered searches keep
+  // reporting distances exactly as before.
+  //
+  // `sort` is likewise only forwarded when the caller actually sent one: absent
+  // means "use the historical inferred ordering", which search_query preserves
+  // byte-for-byte. meta.sort_applied above still names whichever path ran.
+  const requestedSort = message.intent.sort;
   const { rows, total } = await searchItems(deps.sql, {
     item_network: networkId, item_domain: domain, item_type: itemType,
     queryVector,
     spatial: spatialParam,
+    ...(requestedSort ? { sort: sortApplied } : {}),
+    ...(requestedSort && sortApplied === 'nearest' ? { orderingCenter: candidateCenter } : {}),
     filters: (message.intent.filters ?? []) as FilterClause[],
     limit: willRerank ? topN : pagination.limit,
     offset: willRerank ? 0 : pagination.offset,
