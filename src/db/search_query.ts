@@ -92,12 +92,44 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
       )::float8`
     : sql`NULL::float8`;
 
-  // ORDER BY: prefer cosine similarity when vector present; else distance; else recency
+  // ORDER BY: prefer cosine similarity when vector present; else distance; else
+  // recency.
+  //
+  // Why the tiebreaker exists (spec §3.4): SQL leaves tied rows unordered, and
+  // each page is an independent query execution whose LIMIT+OFFSET bound
+  // differs, so the planner can arrange a tie group differently between page N
+  // and page N+1 — rows appear twice while others are never returned. Measured
+  // on 200 rows sharing one created_at and one indexed_at: paging at limit 20
+  // returned 197 distinct ids out of 200. item_id is unique per row, already in
+  // the composite PK and already selected, and a sort comparator only reads it
+  // INSIDE a tie group, so distinct leading keys never pay for it.
+  //
+  // ...EXCEPT on the cosine path, which deliberately has NO tiebreaker.
+  // Appending a second sort key makes pgvector's HNSW index unusable: the scan
+  // supplies a pathkey only for the exact single-expression ordering, and being
+  // approximate it cannot promise it emits complete tie groups, so Postgres
+  // cannot build an incremental sort over it either. Measured on 20k rows,
+  // adding `, s.item_id ASC` here replaced
+  //   Index Scan using item_search_embedding_hnsw   (2.8 ms)
+  // with a full Seq Scan + top-N heapsort of every live row (316 ms) — 115x
+  // slower and O(corpus). Forcing seqscan/hashjoin/mergejoin off does not
+  // recover an HNSW plan; none exists.
+  //
+  // The cost would also buy little: ties here need byte-identical embeddings
+  // (in practice only the embedding IS NULL tail), and because HNSW is
+  // approximate, differing LIMIT+OFFSET bounds can change which rows land in
+  // the candidate set at all — so ordering within a tie group cannot make
+  // relevance paging deterministic regardless. Deterministic paging is
+  // therefore a firm guarantee for `newest` and `nearest`, and best-effort for
+  // `relevance`. Distance and recency pay nothing: the geo path keeps the same
+  // Bitmap Index Scan on item_search_geo_gist with a byte-identical plan, and
+  // recency sorts either way.
+  const tiebreak = sql`s.item_id ASC`;
   const orderBy = vecLiteral
     ? sql`s.embedding <=> ${vecLiteral}::vector ASC`
     : p.spatial
-      ? sql`${distExpr} ASC NULLS LAST`
-      : sql`s.indexed_at DESC`;
+      ? sql`${distExpr} ASC NULLS LAST, ${tiebreak}`
+      : sql`s.indexed_at DESC, ${tiebreak}`;
 
   const raw = await sql<{
     item_network: string; item_domain: string; item_type: string; item_id: string;
