@@ -9,6 +9,37 @@ import { cacheKey, getCached, setCached } from './result_cache.js';
 import { TeiReranker } from '../rerank/reranker.js';
 import { unflatten } from './unflatten.js';
 
+export type SortMode = 'relevance' | 'newest' | 'nearest';
+
+/**
+ * Resolve the ORDER the request will actually get. Pure and exported so the
+ * decision table is testable without a database or a live route.
+ *
+ * Contract (docs/superpowers/plans/2026-09-03-list-view-wire-contract.md §1.2):
+ * an unsatisfiable `sort` NEVER errors — it degrades to `newest`, and the caller
+ * is told via `meta.sort_applied`. With no `sort` requested we reproduce today's
+ * inferred precedence exactly (cosine > distance > recency) so existing callers
+ * see no change.
+ */
+export function resolveSort(input: {
+  requested?: SortMode;
+  hasAnchor: boolean;
+  hasText: boolean;
+  hasCenter: boolean;
+  hasSpatialFilter: boolean;
+}): SortMode {
+  const canRelevance = input.hasAnchor || input.hasText;
+
+  if (input.requested === 'relevance') return canRelevance ? 'relevance' : 'newest';
+  if (input.requested === 'nearest') return input.hasCenter ? 'nearest' : 'newest';
+  if (input.requested === 'newest') return 'newest';
+
+  // No explicit sort: today's inferred behaviour, preserved exactly.
+  if (canRelevance) return 'relevance';
+  if (input.hasSpatialFilter && input.hasCenter) return 'nearest';
+  return 'newest';
+}
+
 // Shared execution core for both /v1/search (nested body) and
 // /v1/search/flat (flattened body). Both routes obtain a validated
 // SearchRequest and then delegate here — the ONLY difference between the
