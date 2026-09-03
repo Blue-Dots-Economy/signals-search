@@ -256,7 +256,13 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
       summary: 'Search items by meaning, location, and/or structured filters',
       description:
         'Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, ' +
-        'spatial, and filters. Ranking: cosine similarity (text/anchor) → distance (spatial) → recency.',
+        'spatial, orderingCenter, sort, and filters. Ordering: pass `intent.sort` ' +
+        '(relevance | newest | nearest); when omitted, ordering is inferred as ' +
+        'cosine → distance → recency for backward compatibility. `intent.spatial` ' +
+        'FILTERS (s_dwithin); `intent.orderingCenter` only ORDERS and never filters. ' +
+        '`meta.sort_applied` always reports the order actually used — an order whose ' +
+        'precondition is unmet degrades to newest rather than erroring. textSearch ' +
+        'narrows results even when an anchor supplies the ranking vector.',
       security: [{ apiKeyAuth: [] }],
       body: SearchRequestSchema,
       response: SEARCH_RESPONSES,

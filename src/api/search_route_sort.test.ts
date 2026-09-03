@@ -199,3 +199,37 @@ describe('route — the applied sort actually orders the results (contract §3)'
     expect(body.message.meta.sort_applied).toBe('nearest');
   });
 });
+
+describe('cross-repo contract fixture (wire-contract §9)', () => {
+  // The exact fixture Signals-DPG asserts from the client side. Both repos
+  // check it independently, so a divergence in field names or semantics fails
+  // a test here rather than only on the dev cluster — every Signals-DPG test
+  // mocks this service, so nothing else would catch it.
+  it('anchor + text + nearest + orderingCenter behaves exactly as contracted', async () => {
+    const body = await search({
+      item: { id: ANCHOR },
+      textSearch: 'solar',
+      sort: 'nearest',
+      orderingCenter: { type: 'Point', coordinates: CENTRE },
+    });
+    const ids = body.message.items.map((i) => i.item_id);
+
+    // 1. No ST_DWithin predicate: `nearest` orders, it must never filter. The
+    //    ~1740 km row survives, far outside any default radius.
+    expect(ids).toContain(P_FAR);
+    expect(body.message.items.some((i) => (i.distanceMeters ?? 0) > 1_000_000)).toBe(true);
+
+    // 2. Ordered by distance, nearest first.
+    expect(ids).toEqual([P_NEAR, P_FAR]);
+
+    // 3. Text applied as a WHERE predicate — P_NOLOC ("borewell drilling")
+    //    is excluded — while the anchor remains the query vector, so every
+    //    row still carries a cosine score.
+    expect(ids).not.toContain(P_NOLOC);
+    expect(body.message.meta.total).toBe(2);
+    expect(body.message.items.every((i) => i.score != null)).toBe(true);
+
+    // 4. The applied sort is reported, and it is the one requested.
+    expect(body.message.meta.sort_applied).toBe('nearest');
+  });
+});
