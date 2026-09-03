@@ -160,8 +160,14 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     hasSpatialFilter: !!spatialParam,
   });
 
-  const willRerank = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
+  // Rerank over-fetches `topN` rows from offset 0 and slices the requested page
+  // back out of that window, so a request whose window falls OUTSIDE the band
+  // returned an EMPTY page under a full meta.total — and burned a reranker call
+  // producing it. Degrade ranking quality at depth instead: skip reranking for
+  // that request and page natively from the requested offset (spec §3.6).
+  const rerankEligible = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
   const topN = Math.max(pagination.limit, deps.rerank.topN);
+  const willRerank = rerankEligible && pagination.offset + pagination.limit <= topN;
   // The centre reaches the query ONLY when the applied sort actually orders by
   // distance. Otherwise it would populate the SELECT's distance expression and
   // start emitting distanceMeters on every anchor search — a silent wire change
