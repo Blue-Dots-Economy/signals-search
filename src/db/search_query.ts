@@ -14,6 +14,14 @@ export type SearchParams = {
   /** ST_DWithin FILTER — decides membership. Unchanged. */
   spatial?: { lat: number; lng: number; distanceMeters: number };
   /**
+   * Rectangular viewport FILTER — decides membership, exactly like `spatial`,
+   * and mutually exclusive with it (enforced at the schema layer). Contributes
+   * NO ordering: a bbox has a centre, but using it to order would make "search
+   * this area" quietly change the sort. A caller that wants nearest-first
+   * within a viewport sends `orderingCenter` alongside it.
+   */
+  bbox?: { minLat: number; minLng: number; maxLat: number; maxLng: number };
+  /**
    * Centre used ONLY to ORDER. Never contributes a WHERE predicate, so
    * `sort: 'nearest'` returns the whole candidate set nearest-first instead of
    * truncating it (#644). When `spatial` is also set, the caller may pass its
@@ -100,9 +108,10 @@ function textFragment(sql: Sql, q: string, fields: string[]): PendingQuery<Row[]
   return parts.reduce((acc, part, i) => (i === 0 ? part : sql`${acc} OR ${part}`), parts[0]);
 }
 
-// Every WHERE predicate, ANDed together. `intent.spatial` is the ONLY clause
-// that filters on location — an ordering centre never appears here, which is
-// what lets `sort: 'nearest'` order the full candidate set (#644).
+// Every WHERE predicate, ANDed together. The spatial clause — a point radius
+// or a bbox — is the only thing that filters on location; an ordering centre
+// never appears here, which is what lets `sort: 'nearest'` order the full
+// candidate set (#644).
 function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
   const conds: PendingQuery<Row[]>[] = [
     sql`i.lifecycle_status = 'live'`,
@@ -119,6 +128,30 @@ function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
       ST_SetSRID(ST_MakePoint(${p.spatial.lng}, ${p.spatial.lat}), 4326)::geography,
       ${p.spatial.distanceMeters}
     )`);
+  }
+  if (p.bbox) {
+    // Two predicates, deliberately. ST_MakeEnvelope takes
+    // (xmin, ymin, xmax, ymax) = (minLng, minLat, maxLng, maxLat).
+    //
+    // 1. `&&` against the GEOGRAPHY envelope is the index-accelerated
+    //    prefilter — it is what keeps the existing item_search_geo_gist index
+    //    in play, the same access path ST_DWithin uses. It compares geodetic
+    //    bounding boxes, which strictly CONTAIN the rectangle below, so it can
+    //    never exclude a row the exact test would have kept.
+    //
+    // 2. ST_Intersects on the GEOMETRY cast is the exact test, and it is
+    //    planar on purpose. A map viewport IS a lat/lng rectangle, but a
+    //    geography polygon's edges are geodesics: the arc joining two corners
+    //    at the same latitude bows toward the pole, so the shape is shifted
+    //    north of the rectangle the user actually saw. Measured on a 0.1° x
+    //    0.2° box at 12.9°N, a pin sitting exactly on the southern edge at
+    //    mid-longitude fell ~2 m OUTSIDE the geography polygon and was dropped,
+    //    while a pin just north of the top edge was wrongly included. Small,
+    //    but it is the same class of error — a list disagreeing with the map —
+    //    that made the circumscribed-circle approximation unacceptable (spec
+    //    D6), so the exact test uses the true rectangle. Boundary-inclusive.
+    const envelope = sql`ST_MakeEnvelope(${p.bbox.minLng}, ${p.bbox.minLat}, ${p.bbox.maxLng}, ${p.bbox.maxLat}, 4326)`;
+    conds.push(sql`s.geo && ${envelope}::geography AND ST_Intersects(s.geo::geometry, ${envelope})`);
   }
   // postgres.js supports nesting PendingQuery fragments inside template literals.
   return conds.reduce<PendingQuery<Row[]>>(

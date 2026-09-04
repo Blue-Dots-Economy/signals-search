@@ -128,7 +128,11 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     anchorLng = rows[0].lng;
   }
 
-  const spatial = message.intent.spatial?.[0];
+  // At most one clause (schema-enforced), discriminated on `op`: a point
+  // radius or a rectangular viewport, never both.
+  const spatialClause = message.intent.spatial?.[0];
+  const radiusClause = spatialClause?.op === 's_dwithin' ? spatialClause : undefined;
+  const bboxClause = spatialClause?.op === 'bbox' ? spatialClause : undefined;
   const pagination = message.pagination;
   const normalized = { networkId, domain, itemType, intent: message.intent, pagination };
   const key = cacheKey(normalized);
@@ -161,10 +165,10 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
   //    by the schema refine); 422 if the anchor has no stored location
   //  - distanceMeters falls back to the configured default when omitted
   let spatialParam: { lat: number; lng: number; distanceMeters: number } | undefined;
-  if (spatial) {
-    const distanceMeters = spatial.distanceMeters ?? deps.defaultDistanceMeters;
-    if (spatial.geometry) {
-      spatialParam = { lat: spatial.geometry.coordinates[1], lng: spatial.geometry.coordinates[0], distanceMeters };
+  if (radiusClause) {
+    const distanceMeters = radiusClause.distanceMeters ?? deps.defaultDistanceMeters;
+    if (radiusClause.geometry) {
+      spatialParam = { lat: radiusClause.geometry.coordinates[1], lng: radiusClause.geometry.coordinates[0], distanceMeters };
     } else if (anchorLat != null && anchorLng != null) {
       spatialParam = { lat: anchorLat, lng: anchorLng, distanceMeters };
     } else {
@@ -189,7 +193,7 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     hasAnchor: !!message.intent.item?.id,
     hasText: !!message.intent.textSearch,
     hasCenter: !!candidateCenter,
-    hasSpatialFilter: !!spatialParam,
+    hasSpatialFilter: !!spatialParam || !!bboxClause,
   });
 
   // Rerank over-fetches `topN` rows from offset 0 and slices the requested page
@@ -215,6 +219,13 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     item_network: networkId, item_domain: domain, item_type: itemType,
     queryVector,
     spatial: spatialParam,
+    // Membership only. A bbox never contributes an ordering centre: using the
+    // viewport's midpoint to order would make "search this area" silently
+    // change the sort. A caller wanting nearest-first inside a viewport sends
+    // `orderingCenter` alongside the bbox.
+    ...(bboxClause
+      ? { bbox: { minLat: bboxClause.minLat, minLng: bboxClause.minLng, maxLat: bboxClause.maxLat, maxLng: bboxClause.maxLng } }
+      : {}),
     ...(requestedSort ? { sort: sortApplied } : {}),
     ...(requestedSort && sortApplied === 'nearest' ? { orderingCenter: candidateCenter } : {}),
     // #148: narrow on the same fields that define semantic relevance. `.path`

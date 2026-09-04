@@ -206,3 +206,92 @@ describe('searchItems — explicit sort (contract §3)', () => {
     expect(seen.indexOf(G_NEAR)).toBeLessThan(seen.indexOf(G_FAR));
   });
 });
+
+// ---------------------------------------------------------------------------
+// bbox viewport filter (#644 "search this area"). Its own item_network again,
+// so the assertions above are untouched. Points sit exactly ON each edge,
+// because edge semantics are the whole question: a viewport filter that drops
+// a pin the user could see on the map edge is the bug this replaces.
+// ---------------------------------------------------------------------------
+
+const bboxNet = { item_network: 'teal_dot', item_domain: 'provider', item_type: 'profile_1.0', sourceUpdatedAtEpoch: '1700000000' };
+const BOX = { minLat: 12.9, minLng: 77.5, maxLat: 13.0, maxLng: 77.7 };
+const B_IN = 'aaaaaaaa-0000-4000-8000-0000000000b1';
+const B_OUT = 'bbbbbbbb-0000-4000-8000-0000000000b2';
+const B_N = 'cccccccc-0000-4000-8000-0000000000b3';  // exactly on maxLat
+const B_S = 'dddddddd-0000-4000-8000-0000000000b4';  // exactly on minLat
+const B_E = 'eeeeeeee-0000-4000-8000-0000000000b5';  // exactly on maxLng
+const B_W = 'ffffffff-0000-4000-8000-0000000000b6';  // exactly on minLng
+const B_NOLOC = '99999999-0000-4000-8000-0000000000b7';
+
+beforeAll(async () => {
+  const pts: [string, { lat: number; lng: number }[]][] = [
+    [B_IN, [{ lat: 12.95, lng: 77.6 }]],
+    [B_OUT, [{ lat: 13.5, lng: 78.5 }]],
+    [B_N, [{ lat: 13.0, lng: 77.6 }]],
+    [B_S, [{ lat: 12.9, lng: 77.6 }]],
+    [B_E, [{ lat: 12.95, lng: 77.7 }]],
+    [B_W, [{ lat: 12.95, lng: 77.5 }]],
+    [B_NOLOC, []],
+  ];
+  const repo = new ItemSearchRepo(sql, N);
+  for (const [id, locs] of pts) {
+    await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_locations)
+      VALUES (${bboxNet.item_network},'provider','profile_1.0',${id},
+              ${sql.json(locs as unknown as Parameters<typeof sql.json>[0])})`;
+    await repo.upsert({ ...bboxNet, item_id: id, embedding: vec(1), locations: locs, lifecycleStatus: 'live', modelVersion: 'm', contentHash: id });
+  }
+});
+
+describe('searchItems — bbox viewport filter', () => {
+  const run = (extra: Record<string, unknown> = {}) =>
+    searchItems(sql, { ...bboxNet, filters: [], limit: 50, offset: 0, ...extra });
+
+  it('includes a point inside and excludes one outside', async () => {
+    const { rows } = await run({ bbox: BOX });
+    const ids = rows.map((r) => r.item_id);
+    expect(ids).toContain(B_IN);
+    expect(ids).not.toContain(B_OUT);
+  });
+
+  it('includes a point on EVERY edge — the viewport is boundary-inclusive', async () => {
+    const { rows } = await run({ bbox: BOX });
+    const ids = rows.map((r) => r.item_id);
+    expect(ids).toContain(B_N);
+    expect(ids).toContain(B_S);
+    expect(ids).toContain(B_E);
+    expect(ids).toContain(B_W);
+  });
+
+  it('excludes location-less rows, since they cannot be in any viewport', async () => {
+    const { rows } = await run({ bbox: BOX });
+    expect(rows.map((r) => r.item_id)).not.toContain(B_NOLOC);
+  });
+
+  it('returns exactly the five in-box rows and a matching total', async () => {
+    const { rows, total } = await run({ bbox: BOX });
+    expect(rows.map((r) => r.item_id).sort()).toEqual([B_IN, B_N, B_S, B_E, B_W].sort());
+    expect(total).toBe(5);
+  });
+
+  it('absent bbox is unchanged — every row in the network comes back', async () => {
+    const { total } = await run();
+    expect(total).toBe(7);
+  });
+
+  it('filters membership without touching ordering, and adds no distance', async () => {
+    // A bbox is a WHERE predicate, not a centre: no distanceMeters appears,
+    // and `newest` still orders by created_at.
+    const { rows } = await run({ bbox: BOX, sort: 'newest' });
+    expect(rows.every((r) => r.distanceMeters === undefined)).toBe(true);
+    expect(rows.length).toBe(5);
+  });
+
+  it('composes with an explicit orderingCenter: bbox filters, centre orders', async () => {
+    const { rows } = await run({ bbox: BOX, sort: 'nearest', orderingCenter: { lat: 12.9, lng: 77.5 } });
+    expect(rows).toHaveLength(5); // still only the in-box rows
+    const ds = rows.map((r) => r.distanceMeters ?? Number.POSITIVE_INFINITY);
+    expect([...ds].sort((a, b) => a - b)).toEqual(ds); // nearest-first
+    expect(rows[0].item_id).toBe(B_W); // the corner the centre sits on
+  });
+});

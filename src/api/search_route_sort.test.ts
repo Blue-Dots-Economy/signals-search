@@ -269,3 +269,54 @@ describe('cross-repo contract fixture (wire-contract §9)', () => {
     expect(body.message.meta.sort_applied).toBe('nearest');
   });
 });
+
+describe('route — bbox viewport filter on the wire', () => {
+  // A box around Bengaluru: contains P_NEAR, excludes P_FAR (Delhi) and the
+  // location-less row.
+  const BOX = { op: 'bbox', minLat: 12.9, minLng: 77.5, maxLat: 13.05, maxLng: 77.7 };
+
+  it('filters to the viewport, end to end', async () => {
+    const body = await search({ spatial: [BOX] });
+    expect(body.message.items.map((i) => i.item_id)).toEqual([P_NEAR]);
+    expect(body.message.meta.total).toBe(1);
+  });
+
+  it('adds no distanceMeters — a bbox is membership, not a centre', async () => {
+    const body = await search({ spatial: [BOX] });
+    expect(body.message.items.every((i) => i.distanceMeters === undefined)).toBe(true);
+  });
+
+  it('nearest with a bbox but no orderingCenter degrades to newest', async () => {
+    // A viewport deliberately does NOT supply an ordering centre: using its
+    // midpoint would make "search this area" silently change the sort. A caller
+    // wanting nearest-first inside a viewport sends orderingCenter too.
+    const body = await search({ spatial: [BOX], sort: 'nearest' });
+    expect(body.message.meta.sort_applied).toBe('newest');
+  });
+
+  it('bbox filters while an explicit orderingCenter orders', async () => {
+    const body = await search({
+      spatial: [BOX],
+      sort: 'nearest',
+      orderingCenter: { type: 'Point', coordinates: CENTRE },
+    });
+    expect(body.message.meta.sort_applied).toBe('nearest');
+    expect(body.message.items.map((i) => i.item_id)).toEqual([P_NEAR]); // still viewport-bound
+  });
+
+  it('400s when a bbox and a radius clause are both supplied', async () => {
+    const res = await harness.app.inject({
+      method: 'POST', url: '/v1/search',
+      headers: { 'x-api-key': RAW },
+      payload: {
+        context: { version: '1.0.0', messageId: 'both', networkId: net, domain: 'provider', itemType: 'profile_1.0' },
+        message: {
+          intent: { spatial: [BOX, { op: 's_dwithin', geometry: { type: 'Point', coordinates: CENTRE }, distanceMeters: 5000 }] },
+          pagination: { limit: 5, offset: 0 },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('VALIDATION_ERROR');
+  });
+});

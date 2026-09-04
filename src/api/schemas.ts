@@ -9,7 +9,7 @@ export const ContextSchema = z.object({
   itemType: z.string().min(1),
 });
 
-const SpatialClauseSchema = z.object({
+const DwithinClauseSchema = z.object({
   op: z.literal('s_dwithin'),
   // Optional: when omitted, the search center is taken from the anchor item
   // (`intent.item.id`) — "search near this profile's own location". When
@@ -18,6 +18,28 @@ const SpatialClauseSchema = z.object({
   // Optional: falls back to SEARCH_DEFAULT_DISTANCE_METERS when omitted.
   distanceMeters: z.number().positive().optional(),
 });
+
+// A rectangular viewport filter (#644 "search this area"). Exists because a map
+// viewport IS a rectangle, and approximating one with its circumscribed circle
+// always covers more ground than the map showed — so the list would include
+// items the user could not see, which is why the viewport area mode was
+// originally dropped from the spec (D6).
+//
+// All four bounds are REQUIRED: a partial box has no sensible meaning, and
+// defaulting the missing side would silently search somewhere the caller did
+// not ask for. Ordering is validated in IntentSchema's refine below.
+const BboxClauseSchema = z.object({
+  op: z.literal('bbox'),
+  minLat: z.number().min(-90).max(90),
+  minLng: z.number().min(-180).max(180),
+  maxLat: z.number().min(-90).max(90),
+  maxLng: z.number().min(-180).max(180),
+});
+
+// Discriminated on `op`, which — combined with the `.max(1)` on the array below
+// — is what makes a radius and a bbox MUTUALLY EXCLUSIVE: supplying both is two
+// clauses and is rejected, rather than one silently winning.
+const SpatialClauseSchema = z.discriminatedUnion('op', [DwithinClauseSchema, BboxClauseSchema]);
 
 const FilterClauseSchema = z.object({
   op: z.enum(['eq', 'neq', 'in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
@@ -61,7 +83,9 @@ export const IntentSchema = z.object({
   // At most one spatial clause: the search applies a single radius filter
   // (only the first clause was ever consumed), so reject extras explicitly
   // rather than silently ignoring them.
-  spatial: z.array(SpatialClauseSchema).max(1, 'at most one spatial clause is supported').optional(),
+  spatial: z.array(SpatialClauseSchema)
+    .max(1, 'at most one spatial clause is supported — a point radius (s_dwithin) and a bbox are mutually exclusive')
+    .optional(),
   filters: z.array(FilterClauseSchema).optional(),
   // Both new fields live INSIDE intent, never on `message` beside pagination:
   // cacheKey() hashes {networkId, domain, itemType, intent, pagination}, so
@@ -70,16 +94,40 @@ export const IntentSchema = z.object({
   sort: SortModeSchema.optional(),
   orderingCenter: OrderingCenterSchema.optional(),
 }).superRefine((intent, ctx) => {
-  // A spatial clause without `geometry` derives the search center from the
+  // An s_dwithin clause without `geometry` derives the search center from the
   // anchor item, so it requires `item.id`. Without an anchor there is no point
-  // to search around.
-  const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => !s.geometry);
+  // to search around. A bbox carries its own bounds, so it never needs one.
+  const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => s.op === 's_dwithin' && !s.geometry);
   if (hasAnchorlessSpatial && !intent.item?.id) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'a spatial clause without geometry requires intent.item.id (the location is taken from the anchor item)',
       path: ['spatial'],
     });
+  }
+
+  // Bbox bounds must be correctly ordered. Rejected rather than normalised: a
+  // transposed box is a caller bug, and silently swapping the corners would
+  // search an area they did not ask for. A box with minLng > maxLng is how an
+  // antimeridian-crossing viewport would arrive — unsupported, and failing
+  // loudly is better than returning an empty result set that looks like
+  // "nothing here".
+  for (const s of intent.spatial ?? []) {
+    if (s.op !== 'bbox') continue;
+    if (s.minLat >= s.maxLat) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'bbox minLat must be less than maxLat',
+        path: ['spatial'],
+      });
+    }
+    if (s.minLng >= s.maxLng) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'bbox minLng must be less than maxLng (a viewport crossing the antimeridian is not supported)',
+        path: ['spatial'],
+      });
+    }
   }
 });
 

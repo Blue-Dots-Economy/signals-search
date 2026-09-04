@@ -113,3 +113,59 @@ describe('SearchResponseSchema — sort_applied (contract §2)', () => {
     expect(SearchResponseSchema.safeParse(withIt).success).toBe(true);
   });
 });
+
+describe('IntentSchema — bbox spatial clause (#644 "search this area")', () => {
+  const ctx = { version: '1.0.0', messageId: 'm1', networkId: 'n', domain: 'd', itemType: 't' };
+  const parse = (intent: unknown) =>
+    SearchRequestSchema.safeParse({ context: ctx, message: { intent, pagination: { limit: 20, offset: 0 } } });
+  const BOX = { op: 'bbox', minLat: 12.9, minLng: 77.5, maxLat: 13.1, maxLng: 77.7 };
+  const RADIUS = { op: 's_dwithin', geometry: { type: 'Point', coordinates: [77.59, 12.97] }, distanceMeters: 5000 };
+
+  it('accepts a well-formed bbox clause with no anchor', () => {
+    expect(parse({ spatial: [BOX] }).success).toBe(true);
+  });
+
+  it('REJECTS a bbox and a radius together — mutually exclusive, never one silently winning', () => {
+    const r = parse({ spatial: [BOX, RADIUS] });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(JSON.stringify(r.error.issues)).toMatch(/mutually exclusive/);
+  });
+
+  it('requires all four bounds — a partial box is rejected, not defaulted', () => {
+    for (const missing of ['minLat', 'minLng', 'maxLat', 'maxLng'] as const) {
+      const partial: Record<string, unknown> = { ...BOX };
+      delete partial[missing];
+      expect(parse({ spatial: [partial] }).success).toBe(false);
+    }
+  });
+
+  it('rejects transposed latitude bounds rather than swapping them', () => {
+    expect(parse({ spatial: [{ ...BOX, minLat: 13.1, maxLat: 12.9 }] }).success).toBe(false);
+  });
+
+  it('rejects a bbox crossing the antimeridian rather than returning an empty set', () => {
+    const r = parse({ spatial: [{ ...BOX, minLng: 179.9, maxLng: -179.9 }] });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(JSON.stringify(r.error.issues)).toMatch(/antimeridian/);
+  });
+
+  it('rejects out-of-range coordinates', () => {
+    expect(parse({ spatial: [{ ...BOX, maxLat: 91 }] }).success).toBe(false);
+    expect(parse({ spatial: [{ ...BOX, minLng: -181 }] }).success).toBe(false);
+  });
+
+  it('does NOT require an anchor, unlike a geometry-less s_dwithin', () => {
+    // A bbox carries its own bounds, so the anchorless-spatial refine must not
+    // fire for it. The radius case still requires an anchor.
+    expect(parse({ spatial: [BOX] }).success).toBe(true);
+    expect(parse({ spatial: [{ op: 's_dwithin', distanceMeters: 5000 }] }).success).toBe(false);
+  });
+
+  it('rejects an unknown spatial op', () => {
+    expect(parse({ spatial: [{ op: 'polygon', coordinates: [] }] }).success).toBe(false);
+  });
+
+  it('leaves the existing s_dwithin clause working unchanged', () => {
+    expect(parse({ spatial: [RADIUS] }).success).toBe(true);
+  });
+});

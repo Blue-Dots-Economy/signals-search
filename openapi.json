@@ -187,52 +187,94 @@
                             "maxItems": 1,
                             "type": "array",
                             "items": {
-                              "type": "object",
-                              "properties": {
-                                "op": {
-                                  "type": "string",
-                                  "enum": [
-                                    "s_dwithin"
-                                  ]
-                                },
-                                "geometry": {
+                              "oneOf": [
+                                {
                                   "type": "object",
                                   "properties": {
-                                    "type": {
+                                    "op": {
                                       "type": "string",
                                       "enum": [
-                                        "Point"
+                                        "s_dwithin"
                                       ]
                                     },
-                                    "coordinates": {
-                                      "type": "array",
-                                      "items": {
-                                        "anyOf": [
-                                          {
-                                            "type": "number"
+                                    "geometry": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "Point"
+                                          ]
+                                        },
+                                        "coordinates": {
+                                          "type": "array",
+                                          "items": {
+                                            "anyOf": [
+                                              {
+                                                "type": "number"
+                                              },
+                                              {
+                                                "type": "number"
+                                              }
+                                            ]
                                           },
-                                          {
-                                            "type": "number"
-                                          }
-                                        ]
+                                          "minItems": 2,
+                                          "maxItems": 2
+                                        }
                                       },
-                                      "minItems": 2,
-                                      "maxItems": 2
+                                      "required": [
+                                        "type",
+                                        "coordinates"
+                                      ]
+                                    },
+                                    "distanceMeters": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "exclusiveMinimum": true
                                     }
                                   },
                                   "required": [
-                                    "type",
-                                    "coordinates"
+                                    "op"
                                   ]
                                 },
-                                "distanceMeters": {
-                                  "type": "number",
-                                  "minimum": 0,
-                                  "exclusiveMinimum": true
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "op": {
+                                      "type": "string",
+                                      "enum": [
+                                        "bbox"
+                                      ]
+                                    },
+                                    "minLat": {
+                                      "type": "number",
+                                      "minimum": -90,
+                                      "maximum": 90
+                                    },
+                                    "minLng": {
+                                      "type": "number",
+                                      "minimum": -180,
+                                      "maximum": 180
+                                    },
+                                    "maxLat": {
+                                      "type": "number",
+                                      "minimum": -90,
+                                      "maximum": 90
+                                    },
+                                    "maxLng": {
+                                      "type": "number",
+                                      "minimum": -180,
+                                      "maximum": 180
+                                    }
+                                  },
+                                  "required": [
+                                    "op",
+                                    "minLat",
+                                    "minLng",
+                                    "maxLat",
+                                    "maxLng"
+                                  ]
                                 }
-                              },
-                              "required": [
-                                "op"
                               ]
                             }
                           },
