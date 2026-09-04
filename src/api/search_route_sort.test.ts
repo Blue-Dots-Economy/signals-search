@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { resolveSort } from './search_route.js';
+import { resolveSort, resolveOrderingCenter } from './search_route.js';
 import { startSearchApp, oneHot, type SearchApp } from '../../test/support/search_app.js';
 
 const base = { hasAnchor: false, hasText: false, hasCenter: false, hasSpatialFilter: false };
@@ -49,6 +49,42 @@ describe('resolveSort — inferred (no sort requested), preserving today’s beh
 
   it('infers newest with no signals at all', () => {
     expect(resolveSort(base)).toBe('newest');
+  });
+});
+
+describe('resolveOrderingCenter — contract §1.3 precedence', () => {
+  const none = { anchorLat: null, anchorLng: null };
+
+  it('prefers an explicit orderingCenter over everything, converting [lng, lat]', () => {
+    expect(resolveOrderingCenter({
+      explicit: { coordinates: [77.59, 12.97] },
+      spatialFilter: { lat: 1, lng: 2 },
+      anchorLat: 3, anchorLng: 4,
+    })).toEqual({ lat: 12.97, lng: 77.59 });
+  });
+
+  it('falls back to the spatial filter’s own centre', () => {
+    expect(resolveOrderingCenter({
+      spatialFilter: { lat: 1, lng: 2 }, anchorLat: 3, anchorLng: 4,
+    })).toEqual({ lat: 1, lng: 2 });
+  });
+
+  it('falls back to the anchor’s stored location', () => {
+    expect(resolveOrderingCenter({ ...none, anchorLat: 3, anchorLng: 4 })).toEqual({ lat: 3, lng: 4 });
+  });
+
+  it('returns undefined when nothing resolves, so nearest degrades to newest', () => {
+    expect(resolveOrderingCenter(none)).toBeUndefined();
+  });
+
+  it('treats a partially-known anchor location as no location', () => {
+    expect(resolveOrderingCenter({ anchorLat: 3, anchorLng: null })).toBeUndefined();
+    expect(resolveOrderingCenter({ anchorLat: null, anchorLng: 4 })).toBeUndefined();
+  });
+
+  it('accepts a 0,0 anchor location rather than treating it as absent', () => {
+    // Null Island is a valid point; a truthiness check here would drop it.
+    expect(resolveOrderingCenter({ anchorLat: 0, anchorLng: 0 })).toEqual({ lat: 0, lng: 0 });
   });
 });
 

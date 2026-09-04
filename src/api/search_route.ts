@@ -42,6 +42,42 @@ export function resolveSort(input: {
   return 'newest';
 }
 
+export type OrderingCenter = { lat: number; lng: number };
+
+/**
+ * Resolve the centre that `sort: 'nearest'` orders around. Pure and exported so
+ * the precedence is testable on its own, and written as statements rather than
+ * a ternary chain because the order of the rules IS the contract.
+ *
+ * Contract §1.3 — first match wins:
+ *   1. an explicit `intent.orderingCenter`
+ *   2. the spatial filter's own centre (an area filter doubles as the centre)
+ *   3. the anchor item's stored location
+ *   4. none → undefined, and resolveSort degrades `nearest` to `newest`
+ *
+ * Deliberately independent of whether an area filter exists: with no spatial
+ * clause the candidate set stays network-wide while the order is nearest-first,
+ * which is the capability #644 is built on.
+ */
+export function resolveOrderingCenter(input: {
+  explicit?: { coordinates: [number, number] };
+  spatialFilter?: { lat: number; lng: number };
+  anchorLat: number | null;
+  anchorLng: number | null;
+}): OrderingCenter | undefined {
+  // GeoJSON order is [lng, lat].
+  if (input.explicit) {
+    return { lat: input.explicit.coordinates[1], lng: input.explicit.coordinates[0] };
+  }
+  if (input.spatialFilter) {
+    return { lat: input.spatialFilter.lat, lng: input.spatialFilter.lng };
+  }
+  if (input.anchorLat != null && input.anchorLng != null) {
+    return { lat: input.anchorLat, lng: input.anchorLng };
+  }
+  return undefined;
+}
+
 // Shared execution core for both /v1/search (nested body) and
 // /v1/search/flat (flattened body). Both routes obtain a validated
 // SearchRequest and then delegate here — the ONLY difference between the
@@ -139,18 +175,14 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     }
   }
 
-  // Contract §1.3 — centre resolution for `nearest`, first match wins:
-  // explicit orderingCenter > the spatial filter's own centre > the anchor's
-  // stored location. Independent of the area filter by design: with no spatial
-  // clause the candidate set stays network-wide while the order is
-  // nearest-first (#644). This is only a CANDIDATE — whether it reaches the
-  // query at all depends on the sort resolved below.
-  const oc = message.intent.orderingCenter;
-  const candidateCenter =
-    oc ? { lat: oc.coordinates[1], lng: oc.coordinates[0] }
-      : spatialParam ? { lat: spatialParam.lat, lng: spatialParam.lng }
-      : anchorLat != null && anchorLng != null ? { lat: anchorLat, lng: anchorLng }
-      : undefined;
+  // Only a CANDIDATE — whether it reaches the query at all depends on the sort
+  // resolved below.
+  const candidateCenter = resolveOrderingCenter({
+    explicit: message.intent.orderingCenter,
+    spatialFilter: spatialParam,
+    anchorLat,
+    anchorLng,
+  });
 
   const sortApplied: SortMode = resolveSort({
     requested: message.intent.sort,
