@@ -203,7 +203,7 @@ and visibly.
 | D14 | With an anchor present, the card label is **"matches your profile"** — even when text is also typed | After D13 the score is still 100% profile↔item cosine; text only narrows membership. Labelling it "matches your search" would be false. The typed text is surfaced as its own removable chip instead. |
 | D15 | `VITE_FREETEXT_MATCH_SCORE_ENABLED` is **kept** | Reversing #646's C3. It is a legitimate per-deployment product choice — "does this instance show a score for free-text matches, or only for profile matches?" — not a workaround for an ambiguous badge. Labelling (D14) fixes the ambiguity; the flag keeps its real meaning. |
 | D16 | Offset paging is retained; **keyset paging is a follow-up** | See §3.5. Accepted, measured risk. |
-| D17 | `item_id` is appended as the final `ORDER BY` key in **both** repos | Fixes P1 in signals-search and the identical latent bug in the native fallback. |
+| D17 | `item_id` is appended as the final `ORDER BY` key on the **`newest` and `nearest`** paths in both repos — **not** on `relevance` | Fixes P1 in signals-search and the identical latent bug in the native fallback. Amended 2026-09-03 after measurement: on the cosine path the tiebreaker destroys the HNSW index (115× slower, O(corpus)) and buys little, because a cosine tie needs byte-identical embeddings and the traversal is deterministic anyway. See §3.4. |
 | D18 | The card's primary metric **is** the ranking basis | So metric and order can never disagree. See §5. |
 | D19 | With no `?domain=`, the list defaults to the viewer's **first interacting counterpart domain**, else the first visible domain | The All tab was the previous no-domain default; something must replace it. Invisible for a viewer with one visible domain. |
 | D20 | The explanation panel ("why this result, in this position") is **in scope** | Requested. Subject to the honesty constraint in §5.4. |
@@ -405,15 +405,84 @@ touch it.
 `items.created_at DESC` with no unique key — identical failure mode. It gets
 the same tiebreaker, or the degraded path stays broken.
 
-**One thing to verify, not assume.** There is an HNSW index on `embedding`
-(`signals-search/src/db/migrations/0001_item_search.sql`). On the cosine path,
-adding a second `ORDER BY` key should still use the index via **incremental
-sort** (index for the leading key, sort only within tie groups), but planner
-behaviour is version- and statistics-dependent. `EXPLAIN ANALYZE` the real
-query with and without the tiebreaker at a realistic row count **before
-finalising**. If the plan regresses to a full sort, the fallback is to keep the
-tiebreaker on the recency and distance paths (no ANN index involved, ties
-common) and address cosine ties separately.
+**MEASURED 2026-09-03 — the cosine path is exempt.** The verification this
+section originally called for was run, and the result reverses the plan for one
+of the three paths.
+
+On 20 000 live rows with real 1024-dim vectors (pgvector `vector_cosine_ops`,
+PG16), appending `, s.item_id ASC` to the cosine clause **destroys the HNSW
+index**:
+
+| ORDER BY | Plan | Time |
+| --- | --- | --- |
+| `embedding <=> :vec ASC` | `Index Scan using item_search_embedding_hnsw` | **2.8 ms** |
+| `embedding <=> :vec ASC, s.item_id ASC` | Seq Scan ×2 + `top-N heapsort` | **316 ms** |
+
+115× slower and a full scan of every live row, so O(corpus) — ~3 s at 200 k,
+unusable at 1 M. Architectural, not a costing accident: with `seqscan`,
+`hashjoin` and `mergejoin` forced off there is still no HNSW path; with
+`enable_incremental_sort = on` no Incremental Sort node appears; and removing
+the `JOIN items` changes nothing. pgvector's HNSW scan supplies a pathkey only
+for the exact single-expression ordering, and being *approximate* it cannot
+promise complete tie groups, so an incremental sort over it is not legal.
+
+**The tiebreaker also buys almost nothing there.** A cosine tie requires
+byte-identical embeddings, which requires identical vectorized content. The one
+real tie group is rows with `embedding IS NULL` (legitimate — no vectorizable
+content), which cluster at the tail. And the HNSW traversal is *deterministic*
+for a fixed query vector, `ef_search` and index state, so even tied rows come
+back in a stable order.
+
+**Resolution:** the tiebreaker applies to `newest` and `nearest` (where it is
+free — those paths already performed a sort) and **not** to `relevance`.
+
+**Relevance paging IS deterministic and does partition cleanly** — measured, at
+`ef_search = 500`: five pages at offsets 0/20/40/100/200 returned 100 rows,
+100 distinct ids, zero overlap between any pair; and offset 100 returned a
+byte-identical set twice in one session and once on a fresh connection. So P1's
+guarantee is scoped only in the narrow sense that `relevance` relies on the
+traversal's determinism rather than on a unique sort key.
+
+### 3.4.1 A separate, higher-severity defect found while measuring this
+
+`hnsw.ef_search` defaults to **40** and `hnsw.iterative_scan` defaults to
+**off**. In that configuration the HNSW scan **silently truncates**. Measured,
+`limit 20`, 20 500 live rows:
+
+| offset | rows returned |
+| --- | --- |
+| 0 | 20 |
+| 20 | 20 |
+| 40 | 20 |
+| 100 | **0** |
+| 200 | **0** |
+
+60 of 100 expected rows. `EXPLAIN` confirms the planner still chooses
+`Index Scan using item_search_embedding_hnsw` at every offset, so nothing falls
+back to a complete plan — the truncation is silent, and `meta.total` still
+reports 20 500.
+
+**This is live today on the default path**, and it is the same failure shape as
+P2: an empty page under a full `meta.total`. It also defeats this document's
+headline requirement, because `getNextPageParam`
+(`use-infinite-browse-items.ts:249`) stops paging on any short page — so under
+`relevance` the list would silently cap at roughly 60 items while displaying a
+count in the thousands. Replacing a 30 km cap with a 60-item cap is not the fix
+#644 asked for.
+
+**The fix is configuration only.** pgvector 0.8.5 supports iterative scan:
+
+```sql
+SET hnsw.iterative_scan = strict_order;
+```
+
+With `ef_search` left at its 40 default, that returns full 20-row pages at
+offsets 0, 40, 100, 200 **and 1000**, with the HNSW index still used. Offset
+200 goes 135 ms → 206 ms — and the 135 ms was fast only because it was
+returning nothing. Offset 0, the common case, shows no regression.
+
+So this is a **fixable defect, not an inherent limitation.** See §3.5 for how
+it changes the scope decision.
 
 ### 3.5 Paging depth: accepted risk (D16)
 
@@ -439,6 +508,21 @@ and it **requires** the D17 tiebreaker to be expressible at all — without
 `item_id` in the comparison you can only say "after this timestamp", which
 skips the rest of the tie group. So D17 is both the correctness fix and the
 prerequisite for the performance fix.
+
+**Open scope decision — `hnsw.iterative_scan` (§3.4.1).** Without it, the
+default `relevance` list silently caps at roughly 60 items, so #644's headline
+requirement is not met on the path most users land on. Three options:
+
+1. **Land the config fix in this epic** (recommended). It is a session-level
+   `SET hnsw.iterative_scan = strict_order` on signals-search's search
+   connection, plus a test that pages past `ef_search` and asserts a non-empty
+   page. Small, and it is the difference between #644 working and not working
+   by default.
+2. **Default the list to `newest`** instead of `relevance`, which pages
+   completely today, with `relevance` opt-in.
+3. **Ship knowing the default view caps at ~60 items.**
+
+Not decided here. Recorded so it is chosen rather than discovered.
 
 ### 3.6 Rerank paging guard (P2)
 
@@ -731,14 +815,24 @@ collapsing (a stable height avoids the list shifting under the user's thumb).
   box; removing it clears that box too (D25). Render it visually distinct
   (dashed border) to signal "remove here, edit above".
 
-### 7.3 Sticky implementation constraint
+### 7.3 Sticky implementation — resolved better than specified
 
-`top-bar.tsx:78` is already `sticky top-0 z-40 min-h-14` — **but it is also
+The constraint was real: `top-bar.tsx:78` is `sticky top-0 z-40 min-h-14` **and
 `flex-wrap`**, so on narrow screens it wraps to two lines and its height is
-**not fixed**. A hardcoded `top-14` on the filter bar would gap or overlap.
+**not fixed**. Any hardcoded `top-14` on the filter bar would gap or overlap.
 
-**Nest both bars in a single sticky container** so they stack without a magic
-offset. Do not hardcode the offset.
+This section originally prescribed nesting both bars in one sticky container.
+Reading `page-shell.tsx` during implementation produced a better answer:
+**`<main>` is the scroll container** (`overflow-y-auto` inside an `h-svh` flex
+column) and the top bar is already its **sibling**, so a new `toolbarSlot`
+rendered between them is **structurally pinned** — no `sticky`, no offset, and
+the flex-wrap problem cannot arise at all. `footerSlot` already used exactly
+this pattern at the bottom of the same column.
+
+**As built:** `PageShell` gains `toolbarSlot`, rendered `flex-none` between
+`<TopBar>` and `<main>`. `BrowseToolbar` carries no positioning classes, and a
+test asserts it does not — a `sticky` class creeping back in would reintroduce
+the offset problem.
 
 ### 7.4 The card metric (D22)
 
@@ -771,6 +865,30 @@ scroll position.
   segmented control is fine as specified. If a network ever declares a fourth
   browsable domain, revisit — the mobile fallback would be a dropdown.
 
+### 7.6 Found during implementation, not specified here
+
+- **The result count rendered twice.** `ContentHeader` already showed it, so
+  adding it to the toolbar put two identical counts within ~40px. The header's
+  copy was removed: the toolbar's survives scrolling and the header's does not.
+- **`item_actions.match_score` must stay on its 0-10 scale.** §5.2's "one scale
+  end to end" is about the DISPLAY path. That column is a different artifact —
+  persisted `REAL`, documented 0-10, already holding rows on that scale, and
+  sorted on in SQL (`fetch_actions.ts`). Writing 0-100 into it would leave the
+  table holding both scales with nothing in a row to say which, so every
+  pre-existing My Actions score would render 10x too small. One conversion at
+  that storage boundary (`compute_match_score.ts`) keeps the column's meaning
+  and needs no backfill.
+- **The map's domain multi-select also fed the LIST's card filter**, so picking
+  a domain other than the browsed one blanked the list entirely. Coherent while
+  the All tab existed; a map concern emptying the list once it did not.
+- **The list feed must wait for a VALID domain** before fetching. A stale or
+  unbrowsable `?domain=` otherwise fires one wasted request and, for a
+  non-interacting domain, draws a 403 on the anchor.
+- **The default-domain effect must only rewrite `?domain=` when REPAIRING** an
+  invalid param. Writing it on every resolve raced the network switcher in the
+  same tick and clobbered `?network=`, and would pin a shared link to the
+  sharer's default rather than letting each viewer resolve their own.
+
 ---
 
 ## 8. Testing
@@ -778,12 +896,19 @@ scroll position.
 **Paging correctness**
 - **P1 regression:** seed rows with identical sort keys, page with `limit`
   smaller than the tie group, assert the union of pages equals the full set
-  with no duplicates and no omissions (fails before the tiebreaker)
+  with no duplicates and no omissions (fails before the tiebreaker). Applies to
+  `newest` and `nearest` only (§3.4). **Use ~200 tied rows, not a handful:** at
+  six rows Postgres picks a stable plan by luck and the test passes *before*
+  the fix, which reads as a false pass. Verified — 200 rows sharing one
+  timestamp, paged at `limit` 20, returned 197 distinct ids of 200 before the
+  fix (3 duplicated, 3 never returned).
 - Same regression against the **native fallback** ordering
 - **Rerank guard:** with rerank enabled, `offset >= topN` returns real rows
   rather than an empty page
-- **Query plan:** `EXPLAIN ANALYZE` confirms the HNSW index survives the added
-  tiebreaker on the cosine path (§3.4)
+- **Query plan:** `EXPLAIN ANALYZE` confirms the HNSW index is still used on the
+  cosine path — i.e. that the tiebreaker was NOT added there (§3.4). A plan
+  showing `Seq Scan` + `top-N heapsort` instead of
+  `Index Scan using item_search_embedding_hnsw` means the exemption regressed.
 
 **Fetch contract**
 - **Unbounded default:** a discover request with no area sends no spatial
