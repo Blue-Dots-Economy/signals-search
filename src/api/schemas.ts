@@ -49,11 +49,11 @@ const FilterClauseSchema = z.object({
   // Numeric comparators must carry a finite number; otherwise Number(value) in the
   // query builder yields NaN and silently matches nothing.
   if (['gt', 'gte', 'lt', 'lte'].includes(f.op) && (typeof f.value !== 'number' || !Number.isFinite(f.value))) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `op '${f.op}' requires a finite numeric value`, path: ['value'] });
+    ctx.addIssue({ code: 'custom', message: `op '${f.op}' requires a finite numeric value`, path: ['value'] });
   }
   // `in` is expanded with Array.prototype.map in the builder, so it must be an array.
   if (f.op === 'in' && !Array.isArray(f.value)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `op 'in' requires an array value`, path: ['value'] });
+    ctx.addIssue({ code: 'custom', message: `op 'in' requires an array value`, path: ['value'] });
   }
 });
 
@@ -100,7 +100,7 @@ export const IntentSchema = z.object({
   const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => s.op === 's_dwithin' && !s.geometry);
   if (hasAnchorlessSpatial && !intent.item?.id) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: 'custom',
       message: 'a spatial clause without geometry requires intent.item.id (the location is taken from the anchor item)',
       path: ['spatial'],
     });
@@ -116,14 +116,14 @@ export const IntentSchema = z.object({
     if (s.op !== 'bbox') continue;
     if (s.minLat >= s.maxLat) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         message: 'bbox minLat must be less than maxLat',
         path: ['spatial'],
       });
     }
     if (s.minLng >= s.maxLng) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         message: 'bbox minLng must be less than maxLng (a viewport crossing the antimeridian is not supported)',
         path: ['spatial'],
       });
