@@ -163,29 +163,55 @@ function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
     )`);
   }
   if (p.bbox) {
-    // Two predicates, deliberately. ST_MakeEnvelope takes
-    // (xmin, ymin, xmax, ymax) = (minLng, minLat, maxLng, maxLat).
-    //
-    // 1. `&&` against the GEOGRAPHY envelope is the index-accelerated
-    //    prefilter — it is what keeps the existing item_search_geo_gist index
-    //    in play, the same access path ST_DWithin uses. It compares geodetic
-    //    bounding boxes, which strictly CONTAIN the rectangle below, so it can
-    //    never exclude a row the exact test would have kept.
-    //
-    // 2. ST_Intersects on the GEOMETRY cast is the exact test, and it is
-    //    planar on purpose. A map viewport IS a lat/lng rectangle, but a
-    //    geography polygon's edges are geodesics: the arc joining two corners
-    //    at the same latitude bows toward the pole, so the shape is shifted
-    //    north of the rectangle the user actually saw. Measured on a 0.1° x
-    //    0.2° box at 12.9°N, a pin sitting exactly on the southern edge at
-    //    mid-longitude fell ~2 m OUTSIDE the geography polygon and was dropped,
-    //    while a pin just north of the top edge was wrongly included. Small,
-    //    but it is the same class of error — a list disagreeing with the map —
-    //    that made the circumscribed-circle approximation unacceptable (spec
-    //    D6), so the exact test uses the true rectangle. Boundary-inclusive.
+    // ST_MakeEnvelope takes (xmin, ymin, xmax, ymax) = (minLng, minLat, maxLng, maxLat).
     const envelope = sql`ST_MakeEnvelope(${p.bbox.minLng}, ${p.bbox.minLat}, ${p.bbox.maxLng}, ${p.bbox.maxLat}, 4326)`;
-    conds.push(sql`s.geo && ${envelope}::geography AND ST_Intersects(s.geo::geometry, ${envelope})`);
+
+    // The EXACT test, and it is planar on purpose. A map viewport IS a lat/lng
+    // rectangle, but a geography polygon's edges are geodesics: the arc joining
+    // two corners at the same latitude bows toward the pole, so the shape is
+    // shifted north of the rectangle the user actually saw. Measured on a
+    // 0.1° x 0.2° box at 12.9°N, a pin sitting exactly on the southern edge
+    // fell ~2 m OUTSIDE the geography polygon and was dropped, while a pin just
+    // north of the top edge was wrongly included. Small, but it is the same
+    // class of error — a list disagreeing with the map — that made the
+    // circumscribed-circle approximation unacceptable (spec D6). Planar is
+    // correct at ANY box size. Boundary-inclusive.
+    const exact = sql`ST_Intersects(s.geo::geometry, ${envelope})`;
+
+    // The geography `&&` PREFILTER is what keeps the existing
+    // item_search_geo_gist index in play — the same access path ST_DWithin
+    // takes; the geometry cast above alone defeats it. Measured on 20 000 geo
+    // rows: with the prefilter, Index Scan using item_search_geo_gist at
+    // 0.261 ms; the exact test alone, double Seq Scan at 240.8 ms; the existing
+    // ST_DWithin, Bitmap Index Scan at 38.6 ms.
+    //
+    // But it is only VALID for a box smaller than a hemisphere in each
+    // direction, because a geography polygon's edges follow the SHORTER
+    // great-circle arc. Past that the envelope is read as going the other way
+    // round the globe and becomes its own complement, so the prefilter — which
+    // is supposed to strictly CONTAIN the planar rectangle — excludes
+    // everything instead. Measured: a longitude span of 180° still matches,
+    // 180.002° and wider silently matches nothing. Worse, an envelope edge
+    // whose endpoints are exactly antipodal makes the geography cast THROW
+    // `Antipodal (180 degrees long) edge detected!`, which is a 500 rather than
+    // an empty page — that happens for a pole-to-pole latitude span (exactly
+    // 180°) and for a 180° longitude span with an edge lying on the equator.
+    //
+    // So the prefilter is applied only when BOTH spans are strictly under 180°,
+    // which excludes every case above at once and leaves realistic viewports
+    // untouched. A box that wide selects almost everything anyway, so losing
+    // index acceleration there costs nothing; returning the wrong rows, or
+    // erroring, is not an option.
+    const withinGeodeticLimits =
+      p.bbox.maxLng - p.bbox.minLng < 180 && p.bbox.maxLat - p.bbox.minLat < 180;
+
+    conds.push(
+      withinGeodeticLimits
+        ? sql`s.geo && ${envelope}::geography AND ${exact}`
+        : exact,
+    );
   }
+
   // postgres.js supports nesting PendingQuery fragments inside template literals.
   return conds.reduce<PendingQuery<Row[]>>(
     (acc, c, i) => (i === 0 ? c : sql`${acc} AND ${c}`),

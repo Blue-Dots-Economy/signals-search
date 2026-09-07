@@ -295,3 +295,47 @@ describe('searchItems — bbox viewport filter', () => {
     expect(rows[0].item_id).toBe(B_W); // the corner the centre sits on
   });
 });
+
+describe('searchItems — bbox wider than a hemisphere', () => {
+  // Regression: the geography `&&` prefilter is only valid below a hemisphere.
+  // Past that a geography polygon's edges take the SHORTER great-circle arc, so
+  // the envelope inverts and the prefilter excluded everything; and an exactly
+  // antipodal edge made the cast THROW, i.e. a 500 rather than an empty page.
+  // teal_dot has 6 located rows (all in/near Bengaluru) and 1 with no location.
+  const LOCATED = [B_IN, B_OUT, B_N, B_S, B_E, B_W];
+  const run = (bbox: Record<string, number>) =>
+    searchItems(sql, { ...bboxNet, filters: [], limit: 50, offset: 0, bbox: bbox as never });
+
+  it('a 358° longitude span returns every located row instead of none', async () => {
+    const { rows } = await run({ minLat: -85, minLng: -179, maxLat: 85, maxLng: 179 });
+    expect(rows.map((r) => r.item_id).sort()).toEqual([...LOCATED].sort());
+  });
+
+  it('a longitude span of exactly 180° still works (the safe boundary)', async () => {
+    const { rows } = await run({ minLat: -85, minLng: -90, maxLat: 85, maxLng: 90 });
+    expect(rows.map((r) => r.item_id).sort()).toEqual([...LOCATED].sort());
+  });
+
+  it('the whole globe (±90 / ±180) returns rows rather than throwing', async () => {
+    // Pole-to-pole latitude makes the meridian edges exactly antipodal, which
+    // errored on the geography cast.
+    const { rows } = await run({ minLat: -90, minLng: -180, maxLat: 90, maxLng: 180 });
+    expect(rows.map((r) => r.item_id).sort()).toEqual([...LOCATED].sort());
+  });
+
+  it('a 180° longitude span with an edge on the equator does not throw', async () => {
+    // The horizontal edge from (-90, 0) to (90, 0) is antipodal.
+    const { rows } = await run({ minLat: 0, minLng: -90, maxLat: 30, maxLng: 90 });
+    expect(rows.map((r) => r.item_id).sort()).toEqual([...LOCATED].sort());
+  });
+
+  it('a wide box still EXCLUDES a row with no location', async () => {
+    const { rows } = await run({ minLat: -90, minLng: -180, maxLat: 90, maxLng: 180 });
+    expect(rows.map((r) => r.item_id)).not.toContain(B_NOLOC);
+  });
+
+  it('a realistic viewport is unaffected', async () => {
+    const { rows } = await run({ minLat: 12.9, minLng: 77.5, maxLat: 13.0, maxLng: 77.7 });
+    expect(rows.map((r) => r.item_id).sort()).toEqual([B_IN, B_N, B_S, B_E, B_W].sort());
+  });
+});
