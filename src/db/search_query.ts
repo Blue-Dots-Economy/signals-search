@@ -39,9 +39,14 @@ export type SearchParams = {
   /**
    * #148: applied as an additional value-match WHERE predicate, ANDed with
    * everything else — NOT as a competing query vector. So text narrows while
-   * an anchor's embedding still ranks. Matched against the `vectorize: true`
+   * an ANCHOR's embedding still ranks. Matched against the `vectorize: true`
    * fields, so narrowing and cosine ranking describe the same content (and a
    * `private` field can never be in that set — vectorizeFields throws on one).
+   *
+   * The caller sets this ONLY when an anchor supplies the query vector. With no
+   * anchor the text IS the query vector, and literal-gating it would delete
+   * semantic recall — cosine could then only reorder rows that already contain
+   * the typed string. See the call site in search_route.ts.
    */
   textSearch?: string;
   /** The `vectorize: true` field names, from registry.vectorizeFields(). */
@@ -93,19 +98,43 @@ function filterFragment(sql: Sql, f: FilterClause): PendingQuery<Row[]> {
   }
 }
 
-// OR across the vectorize fields, ANDed into the WHERE. Runs against
-// i.item_state — item_search stores no serialized text, and the `JOIN items i`
-// is already present. Field names are BOUND as parameters to `->>`, never
-// interpolated, matching filterFragment.
-//
-// Known looseness (accepted, contract §4): for an array-valued field, `->>'f'`
-// yields the serialized JSON array as text (e.g. ["solar","wind"]), so ILIKE
-// matches against that text form. Fine for a narrowing predicate.
+/**
+ * The #148 narrowing predicate: every whitespace-separated TERM must appear in
+ * SOME vectorized field. So it is an AND across terms, each an OR across
+ * fields, ANDed as a whole into the WHERE.
+ *
+ * Tokenized rather than matched as one contiguous `%q%` string. The whole-query
+ * form looks equivalent for one word and falls off a cliff for two: with
+ * `service_details: 'solar installation'` and `services_offered: ['Solar',
+ * 'Training']`, the query `'solar training'` matched NOTHING, because no single
+ * field holds that contiguous string. Any realistic multi-word search returned
+ * an empty list.
+ *
+ * Runs against i.item_state — item_search stores no serialized text, and the
+ * `JOIN items i` is already present. Field names and terms are BOUND as
+ * parameters, never interpolated, matching filterFragment.
+ *
+ * Known looseness (contract §4, accepted): for an array-valued field,
+ * `->>'f'` yields the serialized JSON array as text (e.g. ["solar","wind"]),
+ * so ILIKE matches that text form.
+ */
 function textFragment(sql: Sql, q: string, fields: string[]): PendingQuery<Row[]> | undefined {
   if (fields.length === 0) return undefined;
-  const like = `%${q}%`;
-  const parts = fields.map((f) => sql`COALESCE(i.item_state->>${f}, '') ILIKE ${like}`);
-  return parts.reduce((acc, part, i) => (i === 0 ? part : sql`${acc} OR ${part}`), parts[0]);
+  const terms = q.split(/\s+/).filter((t) => t.length > 0);
+  if (terms.length === 0) return undefined;
+
+  const perTerm = terms.map((term) => {
+    // Escape the ILIKE metacharacters so a typed `%` or `_` matches itself.
+    // The value is bound, so this was never an injection risk — but unescaped,
+    // searching "50%" barely narrowed anything and a lone "_" matched every
+    // row. Backslash is ILIKE's default escape character, so escaping it too
+    // keeps a literal backslash literal.
+    const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const parts = fields.map((f) => sql`COALESCE(i.item_state->>${f}, '') ILIKE ${like}`);
+    return parts.reduce((acc, part, i) => (i === 0 ? part : sql`${acc} OR ${part}`), parts[0]);
+  });
+  const wrapped = perTerm.map((frag) => sql`(${frag})`);
+  return wrapped.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc} AND ${frag}`), wrapped[0]);
 }
 
 // Every WHERE predicate, ANDed together. The spatial clause — a point radius

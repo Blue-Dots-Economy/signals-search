@@ -46,9 +46,10 @@ beforeAll(async () => {
   // Force indexed_at to tie as well, so the inferred recency path also ties.
   await sql`UPDATE item_search SET indexed_at = ${TIED_AT}::timestamptz WHERE item_network = ${net}`;
 
-  // Give the first six rows searchable text, so the P2 rerank cases below have
-  // a narrowed candidate set larger than RESULT_TOPN. Row counts are unchanged,
-  // so the paging assertions above are unaffected.
+  // Give the first six rows searchable text. The P2 cases below need a request
+  // that is rerank-ELIGIBLE, which means `textSearch` present; with no anchor
+  // the text ranks rather than filters, so the candidate set stays the full
+  // TIED rows. Row counts are unchanged, so the assertions above are unaffected.
   await sql`UPDATE items SET item_state = ${sql.json({ service_details: 'solar installation' } as Parameters<typeof sql.json>[0])}
             WHERE item_network = ${net} AND item_id = ANY(${TEXT_IDS})`;
 }, 180_000);
@@ -138,17 +139,17 @@ afterAll(async () => {
   await new Promise<void>((resolve) => stub?.close(() => resolve()));
 });
 
-async function rerankSearch(limit: number, offset: number) {
+async function rerankSearch(limit: number, offset: number, extraIntent: Record<string, unknown> = {}) {
   const res = await rerankApp.inject({
     method: 'POST', url: '/v1/search',
     headers: { 'x-api-key': RAW },
     payload: {
-      context: { version: '1.0.0', messageId: `p2-${limit}-${offset}`, networkId: net, domain: 'provider', itemType: 'profile_1.0' },
-      message: { intent: { textSearch: 'solar' }, pagination: { limit, offset } },
+      context: { version: '1.0.0', messageId: `p2-${limit}-${offset}-${JSON.stringify(extraIntent)}`, networkId: net, domain: 'provider', itemType: 'profile_1.0' },
+      message: { intent: { textSearch: 'solar', ...extraIntent }, pagination: { limit, offset } },
     },
   });
   expect(res.statusCode).toBe(200);
-  return res.json() as { message: { items: { item_id: string }[]; meta: { total: number } } };
+  return res.json() as { message: { items: { item_id: string }[]; meta: { total: number; sort_applied: string } } };
 }
 
 describe('P2 — rerank must not truncate paging', () => {
@@ -156,7 +157,9 @@ describe('P2 — rerank must not truncate paging', () => {
     // RESULT_TOPN=4, so offset 4 previously fell outside the over-fetched
     // window and returned [] while meta.total still reported the full count.
     const body = await rerankSearch(2, 4);
-    expect(body.message.meta.total).toBe(TEXT_IDS.length);
+    // The point is the mismatch the guard fixes: meta.total reports far more
+    // rows than the over-fetch window, and the page past that window must
+    // still contain real rows.
     expect(body.message.meta.total).toBeGreaterThan(RESULT_TOPN);
     expect(body.message.items.length).toBeGreaterThan(0); // was 0 before the guard
   });
@@ -168,6 +171,25 @@ describe('P2 — rerank must not truncate paging', () => {
     const body = await rerankSearch(2, 0);
     expect(rerankCalls).toBeGreaterThan(before);
     expect(body.message.items).toHaveLength(2);
+  });
+
+  it('does NOT rerank a `newest` page — that would serve an order it did not report', async () => {
+    // Reranking reorders by query-vs-document relevance. Applied to a recency
+    // page it silently replaces the ORDER BY while meta.sort_applied still
+    // says `newest`, so the caller is told one order and served another.
+    const before = rerankCalls;
+    const body = await rerankSearch(2, 0, { sort: 'newest' });
+    expect(rerankCalls).toBe(before);
+    expect(body.message.meta.sort_applied).toBe('newest');
+  });
+
+  it('does NOT rerank a `nearest` page either', async () => {
+    const before = rerankCalls;
+    const body = await rerankSearch(2, 0, {
+      sort: 'nearest', orderingCenter: { type: 'Point', coordinates: [77.59, 12.97] },
+    });
+    expect(rerankCalls).toBe(before);
+    expect(body.message.meta.sort_applied).toBe('nearest');
   });
 
   it('the deep page does NOT call the reranker', async () => {

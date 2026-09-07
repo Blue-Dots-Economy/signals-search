@@ -304,6 +304,14 @@ describe('route — bbox viewport filter on the wire', () => {
     expect(body.message.items.map((i) => i.item_id)).toEqual([P_NEAR]); // still viewport-bound
   });
 
+  it('a bbox with an orderingCenter and NO sort reports newest, not nearest', async () => {
+    // The inferred SQL branch orders by distance only for an s_dwithin radius;
+    // a bbox filters without ordering. Counting the bbox as a spatial filter
+    // made meta.sort_applied claim `nearest` over an indexed_at-ordered page.
+    const body = await search({ spatial: [BOX], orderingCenter: { type: 'Point', coordinates: CENTRE } });
+    expect(body.message.meta.sort_applied).toBe('newest');
+  });
+
   it('400s when a bbox and a radius clause are both supplied', async () => {
     const res = await harness.app.inject({
       method: 'POST', url: '/v1/search',

@@ -193,7 +193,13 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     hasAnchor: !!message.intent.item?.id,
     hasText: !!message.intent.textSearch,
     hasCenter: !!candidateCenter,
-    hasSpatialFilter: !!spatialParam || !!bboxClause,
+    // s_dwithin ONLY, not bbox. This flag exists for the INFERRED (no `sort`)
+    // branch, and the inferred SQL orders by distance only when a radius
+    // clause is present — a bbox filters without ordering. Counting a bbox
+    // here let `meta.sort_applied` report `nearest` over a page actually
+    // ordered by `indexed_at`, whenever a caller sent a bbox plus an
+    // orderingCenter and no `sort`.
+    hasSpatialFilter: !!spatialParam,
   });
 
   // Rerank over-fetches `topN` rows from offset 0 and slices the requested page
@@ -201,7 +207,16 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
   // returned an EMPTY page under a full meta.total — and burned a reranker call
   // producing it. Degrade ranking quality at depth instead: skip reranking for
   // that request and page natively from the requested offset (spec §3.6).
-  const rerankEligible = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
+  // Also gated on the RESOLVED sort. Reranking reorders by query-vs-document
+  // relevance, so applying it to a recency or distance page would silently
+  // replace that order while meta.sort_applied still claimed `newest` /
+  // `nearest` — the caller is told one order and served another. Latent only
+  // because RERANK_DEFAULT is false by default; it bites wherever rerank is
+  // switched on.
+  const rerankEligible = deps.rerank.defaultOn
+    && !!deps.rerank.baseUrl
+    && !!message.intent.textSearch
+    && sortApplied === 'relevance';
   const topN = Math.max(pagination.limit, deps.rerank.topN);
   const willRerank = rerankEligible && pagination.offset + pagination.limit <= topN;
   // The centre reaches the query ONLY when the applied sort actually orders by
@@ -231,7 +246,15 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     // #148: narrow on the same fields that define semantic relevance. `.path`
     // because vectorizeFields returns {path, weight}, and the weights only
     // matter for serialization/reranking, not for a match predicate.
-    ...(message.intent.textSearch
+    //
+    // ONLY when an anchor is present. That is the whole of what #148 asked for
+    // — the bug was text being DISCARDED when an anchor already supplied the
+    // query vector. With no anchor the text IS the query vector, so it must
+    // RANK rather than filter: adding a literal predicate there would mean
+    // cosine could only ever reorder rows that already contain the typed
+    // string, which deletes semantic recall on the main browse path and is the
+    // opposite of what an embedding search is for.
+    ...(message.intent.textSearch && message.intent.item?.id
       ? {
           textSearch: message.intent.textSearch,
           textSearchFields: deps.registry.vectorizeFields(networkId, domain, itemType).map((f) => f.path),
