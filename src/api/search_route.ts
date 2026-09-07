@@ -1,13 +1,82 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
-import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse } from './schemas.js';
+import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse, type SortMode } from './schemas.js';
 import { authenticateApiKey } from './auth.js';
 import { searchItems, type FilterClause } from '../db/search_query.js';
 import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
 import { TeiReranker } from '../rerank/reranker.js';
 import { unflatten } from './unflatten.js';
+
+// Re-exported from the wire schema rather than re-declared, so the decision
+// table and the accepted/reported values can never drift apart.
+export type { SortMode } from './schemas.js';
+
+/**
+ * Resolve the ORDER the request will actually get. Pure and exported so the
+ * decision table is testable without a database or a live route.
+ *
+ * Contract (docs/superpowers/plans/2026-09-03-list-view-wire-contract.md §1.2):
+ * an unsatisfiable `sort` NEVER errors — it degrades to `newest`, and the caller
+ * is told via `meta.sort_applied`. With no `sort` requested we reproduce today's
+ * inferred precedence exactly (cosine > distance > recency) so existing callers
+ * see no change.
+ */
+export function resolveSort(input: {
+  requested?: SortMode;
+  hasAnchor: boolean;
+  hasText: boolean;
+  hasCenter: boolean;
+  hasSpatialFilter: boolean;
+}): SortMode {
+  const canRelevance = input.hasAnchor || input.hasText;
+
+  if (input.requested === 'relevance') return canRelevance ? 'relevance' : 'newest';
+  if (input.requested === 'nearest') return input.hasCenter ? 'nearest' : 'newest';
+  if (input.requested === 'newest') return 'newest';
+
+  // No explicit sort: today's inferred behaviour, preserved exactly.
+  if (canRelevance) return 'relevance';
+  if (input.hasSpatialFilter && input.hasCenter) return 'nearest';
+  return 'newest';
+}
+
+export type OrderingCenter = { lat: number; lng: number };
+
+/**
+ * Resolve the centre that `sort: 'nearest'` orders around. Pure and exported so
+ * the precedence is testable on its own, and written as statements rather than
+ * a ternary chain because the order of the rules IS the contract.
+ *
+ * Contract §1.3 — first match wins:
+ *   1. an explicit `intent.orderingCenter`
+ *   2. the spatial filter's own centre (an area filter doubles as the centre)
+ *   3. the anchor item's stored location
+ *   4. none → undefined, and resolveSort degrades `nearest` to `newest`
+ *
+ * Deliberately independent of whether an area filter exists: with no spatial
+ * clause the candidate set stays network-wide while the order is nearest-first,
+ * which is the capability #644 is built on.
+ */
+export function resolveOrderingCenter(input: {
+  explicit?: { coordinates: [number, number] };
+  spatialFilter?: { lat: number; lng: number };
+  anchorLat: number | null;
+  anchorLng: number | null;
+}): OrderingCenter | undefined {
+  // GeoJSON order is [lng, lat].
+  if (input.explicit) {
+    return { lat: input.explicit.coordinates[1], lng: input.explicit.coordinates[0] };
+  }
+  if (input.spatialFilter) {
+    return { lat: input.spatialFilter.lat, lng: input.spatialFilter.lng };
+  }
+  if (input.anchorLat != null && input.anchorLng != null) {
+    return { lat: input.anchorLat, lng: input.anchorLng };
+  }
+  return undefined;
+}
 
 // Shared execution core for both /v1/search (nested body) and
 // /v1/search/flat (flattened body). Both routes obtain a validated
@@ -59,7 +128,11 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     anchorLng = rows[0].lng;
   }
 
-  const spatial = message.intent.spatial?.[0];
+  // At most one clause (schema-enforced), discriminated on `op`: a point
+  // radius or a rectangular viewport, never both.
+  const spatialClause = message.intent.spatial?.[0];
+  const radiusClause = spatialClause?.op === 's_dwithin' ? spatialClause : undefined;
+  const bboxClause = spatialClause?.op === 'bbox' ? spatialClause : undefined;
   const pagination = message.pagination;
   const normalized = { networkId, domain, itemType, intent: message.intent, pagination };
   const key = cacheKey(normalized);
@@ -71,7 +144,13 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
   // applies here — the target is the caller-declared context.domain, already
   // gated by the served-domain check above, with no anchor source domain to
   // scope against.
-  if (!message.intent.item?.id && message.intent.textSearch) {
+  // #148: text and an anchor are NO LONGER mutually exclusive. With an anchor
+  // present its stored embedding remains the query vector (so relevance still
+  // explains the order) and the text is applied as a narrowing WHERE predicate
+  // in search_query.ts. Without an anchor, text becomes the query vector as
+  // before. Gating on `!queryVector` rather than on the anchor id keeps the
+  // embed call on the cache-MISS-only path it was always on.
+  if (!queryVector && message.intent.textSearch) {
     [queryVector] = await deps.embedder.embed([message.intent.textSearch]);
   }
 
@@ -86,10 +165,10 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
   //    by the schema refine); 422 if the anchor has no stored location
   //  - distanceMeters falls back to the configured default when omitted
   let spatialParam: { lat: number; lng: number; distanceMeters: number } | undefined;
-  if (spatial) {
-    const distanceMeters = spatial.distanceMeters ?? deps.defaultDistanceMeters;
-    if (spatial.geometry) {
-      spatialParam = { lat: spatial.geometry.coordinates[1], lng: spatial.geometry.coordinates[0], distanceMeters };
+  if (radiusClause) {
+    const distanceMeters = radiusClause.distanceMeters ?? deps.defaultDistanceMeters;
+    if (radiusClause.geometry) {
+      spatialParam = { lat: radiusClause.geometry.coordinates[1], lng: radiusClause.geometry.coordinates[0], distanceMeters };
     } else if (anchorLat != null && anchorLng != null) {
       spatialParam = { lat: anchorLat, lng: anchorLng, distanceMeters };
     } else {
@@ -100,12 +179,87 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     }
   }
 
-  const willRerank = deps.rerank.defaultOn && !!deps.rerank.baseUrl && !!message.intent.textSearch;
+  // Only a CANDIDATE — whether it reaches the query at all depends on the sort
+  // resolved below.
+  const candidateCenter = resolveOrderingCenter({
+    explicit: message.intent.orderingCenter,
+    spatialFilter: spatialParam,
+    anchorLat,
+    anchorLng,
+  });
+
+  const sortApplied: SortMode = resolveSort({
+    requested: message.intent.sort,
+    hasAnchor: !!message.intent.item?.id,
+    hasText: !!message.intent.textSearch,
+    hasCenter: !!candidateCenter,
+    // s_dwithin ONLY, not bbox. This flag exists for the INFERRED (no `sort`)
+    // branch, and the inferred SQL orders by distance only when a radius
+    // clause is present — a bbox filters without ordering. Counting a bbox
+    // here let `meta.sort_applied` report `nearest` over a page actually
+    // ordered by `indexed_at`, whenever a caller sent a bbox plus an
+    // orderingCenter and no `sort`.
+    hasSpatialFilter: !!spatialParam,
+  });
+
+  // Rerank over-fetches `topN` rows from offset 0 and slices the requested page
+  // back out of that window, so a request whose window falls OUTSIDE the band
+  // returned an EMPTY page under a full meta.total — and burned a reranker call
+  // producing it. Degrade ranking quality at depth instead: skip reranking for
+  // that request and page natively from the requested offset (spec §3.6).
+  // Also gated on the RESOLVED sort. Reranking reorders by query-vs-document
+  // relevance, so applying it to a recency or distance page would silently
+  // replace that order while meta.sort_applied still claimed `newest` /
+  // `nearest` — the caller is told one order and served another. Latent only
+  // because RERANK_DEFAULT is false by default; it bites wherever rerank is
+  // switched on.
+  const rerankEligible = deps.rerank.defaultOn
+    && !!deps.rerank.baseUrl
+    && !!message.intent.textSearch
+    && sortApplied === 'relevance';
   const topN = Math.max(pagination.limit, deps.rerank.topN);
+  const willRerank = rerankEligible && pagination.offset + pagination.limit <= topN;
+  // The centre reaches the query ONLY when the applied sort actually orders by
+  // distance. Otherwise it would populate the SELECT's distance expression and
+  // start emitting distanceMeters on every anchor search — a silent wire change
+  // for callers that never asked for a location. A spatial FILTER still
+  // supplies its own centre inside search_query, so area-filtered searches keep
+  // reporting distances exactly as before.
+  //
+  // `sort` is likewise only forwarded when the caller actually sent one: absent
+  // means "use the historical inferred ordering", which search_query preserves
+  // byte-for-byte. meta.sort_applied above still names whichever path ran.
+  const requestedSort = message.intent.sort;
   const { rows, total } = await searchItems(deps.sql, {
     item_network: networkId, item_domain: domain, item_type: itemType,
     queryVector,
     spatial: spatialParam,
+    // Membership only. A bbox never contributes an ordering centre: using the
+    // viewport's midpoint to order would make "search this area" silently
+    // change the sort. A caller wanting nearest-first inside a viewport sends
+    // `orderingCenter` alongside the bbox.
+    ...(bboxClause
+      ? { bbox: { minLat: bboxClause.minLat, minLng: bboxClause.minLng, maxLat: bboxClause.maxLat, maxLng: bboxClause.maxLng } }
+      : {}),
+    ...(requestedSort ? { sort: sortApplied } : {}),
+    ...(requestedSort && sortApplied === 'nearest' ? { orderingCenter: candidateCenter } : {}),
+    // #148: narrow on the same fields that define semantic relevance. `.path`
+    // because vectorizeFields returns {path, weight}, and the weights only
+    // matter for serialization/reranking, not for a match predicate.
+    //
+    // ONLY when an anchor is present. That is the whole of what #148 asked for
+    // — the bug was text being DISCARDED when an anchor already supplied the
+    // query vector. With no anchor the text IS the query vector, so it must
+    // RANK rather than filter: adding a literal predicate there would mean
+    // cosine could only ever reorder rows that already contain the typed
+    // string, which deletes semantic recall on the main browse path and is the
+    // opposite of what an embedding search is for.
+    ...(message.intent.textSearch && message.intent.item?.id
+      ? {
+          textSearch: message.intent.textSearch,
+          textSearchFields: deps.registry.vectorizeFields(networkId, domain, itemType).map((f) => f.path),
+        }
+      : {}),
     filters: (message.intent.filters ?? []) as FilterClause[],
     limit: willRerank ? topN : pagination.limit,
     offset: willRerank ? 0 : pagination.offset,
@@ -136,7 +290,7 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
         ...(r.score != null ? { score: Number(r.score.toFixed(4)) } : {}),
         ...(r.distanceMeters != null ? { distanceMeters: Math.round(r.distanceMeters) } : {}),
       })),
-      meta: { total, limit: pagination.limit, offset: pagination.offset },
+      meta: { total, limit: pagination.limit, offset: pagination.offset, sort_applied: sortApplied },
     },
   };
   await setCached(deps.redis, key, response, deps.cacheTtlSeconds);
@@ -168,7 +322,13 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
       summary: 'Search items by meaning, location, and/or structured filters',
       description:
         'Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, ' +
-        'spatial, and filters. Ranking: cosine similarity (text/anchor) → distance (spatial) → recency.',
+        'spatial, orderingCenter, sort, and filters. Ordering: pass `intent.sort` ' +
+        '(relevance | newest | nearest); when omitted, ordering is inferred as ' +
+        'cosine → distance → recency for backward compatibility. `intent.spatial` ' +
+        'FILTERS (s_dwithin); `intent.orderingCenter` only ORDERS and never filters. ' +
+        '`meta.sort_applied` always reports the order actually used — an order whose ' +
+        'precondition is unmet degrades to newest rather than erroring. textSearch ' +
+        'narrows results even when an anchor supplies the ranking vector.',
       security: [{ apiKeyAuth: [] }],
       body: SearchRequestSchema,
       response: SEARCH_RESPONSES,
