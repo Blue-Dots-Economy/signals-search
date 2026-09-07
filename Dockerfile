@@ -15,16 +15,21 @@ RUN corepack enable
 WORKDIR /app
 
 # --- build: full deps + tsc -> dist (includes copied migration SQL) ---
-# Lifecycle scripts are blocked by `pnpm.onlyBuiltDependencies: []` in
-# package.json, NOT by a --ignore-scripts flag here. Same effect for the four
-# script-bearing packages in the tree (cpu-features, esbuild, protobufjs, ssh2 —
-# all dev-only), but declared in one place that every install honours: Docker,
-# CI, and a developer's laptop. The flag could not be overridden — a maintainer
-# who later needs a genuinely-native runtime dep (argon2, sharp) adds it to that
-# array and it builds everywhere, instead of being silently ignored here.
+# --ignore-scripts: no dependency lifecycle script is needed to build or run
+# this service. The four script-bearing packages in the tree (cpu-features,
+# esbuild, protobufjs, ssh2) are all dev-only and none depends on its script
+# having run — esbuild resolves its binary from the @esbuild/<platform> optional
+# package and ssh2 falls back to pure JS — so the prod-deps stage below has no
+# build scripts at all. pnpm 10 does already block these by default, but that
+# default only holds while `packageManager` in package.json stays >= 10; the
+# flag makes the guarantee independent of the pnpm version and matches what CI
+# already passes (.github/workflows/ci.yml). There is no root pre/post-install
+# script to preserve. Note that `pnpm.onlyBuiltDependencies: []` in package.json
+# is an empty *allowlist* and is a no-op — removing it changes nothing; it is
+# not what blocks these scripts.
 FROM base AS build
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN pnpm build
@@ -32,7 +37,7 @@ RUN pnpm build
 # --- prod-deps: production-only node_modules ---
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile --prod
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
 # --- runtime ---
 # Hardened runtime: no shell, no apt, no npm/corepack. Nothing here needs them —
