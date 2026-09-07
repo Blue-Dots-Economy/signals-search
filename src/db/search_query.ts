@@ -118,18 +118,22 @@ function filterFragment(sql: Sql, f: FilterClause): PendingQuery<Row[]> {
  * `->>'f'` yields the serialized JSON array as text (e.g. ["solar","wind"]),
  * so ILIKE matches that text form.
  */
+// ILIKE metacharacters, escaped so a typed `%` or `_` matches itself. The term
+// is always bound as a parameter, so this was never an injection risk — but
+// unescaped, searching "50%" barely narrowed anything and a lone "_" matched
+// every row. Backslash is ILIKE's default escape character, so escaping it too
+// keeps a literal backslash literal.
+function escapeLikePattern(term: string): string {
+  return term.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 function textFragment(sql: Sql, q: string, fields: string[]): PendingQuery<Row[]> | undefined {
   if (fields.length === 0) return undefined;
   const terms = q.split(/\s+/).filter((t) => t.length > 0);
   if (terms.length === 0) return undefined;
 
   const perTerm = terms.map((term) => {
-    // Escape the ILIKE metacharacters so a typed `%` or `_` matches itself.
-    // The value is bound, so this was never an injection risk — but unescaped,
-    // searching "50%" barely narrowed anything and a lone "_" matched every
-    // row. Backslash is ILIKE's default escape character, so escaping it too
-    // keeps a literal backslash literal.
-    const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const like = `%${escapeLikePattern(term)}%`;
     const parts = fields.map((f) => sql`COALESCE(i.item_state->>${f}, '') ILIKE ${like}`);
     return parts.reduce((acc, part, i) => (i === 0 ? part : sql`${acc} OR ${part}`), parts[0]);
   });
