@@ -23,8 +23,7 @@ updates:
     target-branch: "feature"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "03:00"
       timezone: "UTC"
     # The limit counts open *version-update* PRs. Grouped updates plus a few
@@ -76,8 +75,7 @@ updates:
     target-branch: "feature"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "03:15"
       timezone: "UTC"
     labels:
@@ -103,8 +101,7 @@ updates:
       - "/docker/tei-bge-m3"
       - "/test/docker"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "03:30"
       timezone: "UTC"
     labels:
