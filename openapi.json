@@ -118,7 +118,7 @@
         "tags": [
           "search"
         ],
-        "description": "Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, spatial, and filters. Ranking: cosine similarity (text/anchor) → distance (spatial) → recency.",
+        "description": "Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, spatial, orderingCenter, sort, and filters. Ordering: pass `intent.sort` (relevance | newest | nearest); when omitted, ordering is inferred as cosine → distance → recency for backward compatibility. `intent.spatial` FILTERS (s_dwithin); `intent.orderingCenter` only ORDERS and never filters. `meta.sort_applied` always reports the order actually used — an order whose precondition is unmet degrades to newest rather than erroring. textSearch narrows results even when an anchor supplies the ranking vector.",
         "requestBody": {
           "required": true,
           "content": {
@@ -187,52 +187,94 @@
                             "maxItems": 1,
                             "type": "array",
                             "items": {
-                              "type": "object",
-                              "properties": {
-                                "op": {
-                                  "type": "string",
-                                  "enum": [
-                                    "s_dwithin"
-                                  ]
-                                },
-                                "geometry": {
+                              "oneOf": [
+                                {
                                   "type": "object",
                                   "properties": {
-                                    "type": {
+                                    "op": {
                                       "type": "string",
                                       "enum": [
-                                        "Point"
+                                        "s_dwithin"
                                       ]
                                     },
-                                    "coordinates": {
-                                      "type": "array",
-                                      "items": {
-                                        "anyOf": [
-                                          {
-                                            "type": "number"
+                                    "geometry": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "Point"
+                                          ]
+                                        },
+                                        "coordinates": {
+                                          "type": "array",
+                                          "items": {
+                                            "anyOf": [
+                                              {
+                                                "type": "number"
+                                              },
+                                              {
+                                                "type": "number"
+                                              }
+                                            ]
                                           },
-                                          {
-                                            "type": "number"
-                                          }
-                                        ]
+                                          "minItems": 2,
+                                          "maxItems": 2
+                                        }
                                       },
-                                      "minItems": 2,
-                                      "maxItems": 2
+                                      "required": [
+                                        "type",
+                                        "coordinates"
+                                      ]
+                                    },
+                                    "distanceMeters": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "exclusiveMinimum": true
                                     }
                                   },
                                   "required": [
-                                    "type",
-                                    "coordinates"
+                                    "op"
                                   ]
                                 },
-                                "distanceMeters": {
-                                  "type": "number",
-                                  "minimum": 0,
-                                  "exclusiveMinimum": true
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "op": {
+                                      "type": "string",
+                                      "enum": [
+                                        "bbox"
+                                      ]
+                                    },
+                                    "minLat": {
+                                      "type": "number",
+                                      "minimum": -90,
+                                      "maximum": 90
+                                    },
+                                    "minLng": {
+                                      "type": "number",
+                                      "minimum": -180,
+                                      "maximum": 180
+                                    },
+                                    "maxLat": {
+                                      "type": "number",
+                                      "minimum": -90,
+                                      "maximum": 90
+                                    },
+                                    "maxLng": {
+                                      "type": "number",
+                                      "minimum": -180,
+                                      "maximum": 180
+                                    }
+                                  },
+                                  "required": [
+                                    "op",
+                                    "minLat",
+                                    "minLng",
+                                    "maxLat",
+                                    "maxLng"
+                                  ]
                                 }
-                              },
-                              "required": [
-                                "op"
                               ]
                             }
                           },
@@ -267,6 +309,44 @@
                                 "value"
                               ]
                             }
+                          },
+                          "sort": {
+                            "type": "string",
+                            "enum": [
+                              "relevance",
+                              "newest",
+                              "nearest"
+                            ]
+                          },
+                          "orderingCenter": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "Point"
+                                ]
+                              },
+                              "coordinates": {
+                                "type": "array",
+                                "items": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ]
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "coordinates"
+                            ]
                           }
                         }
                       },
@@ -456,12 +536,21 @@
                             },
                             "offset": {
                               "type": "number"
+                            },
+                            "sort_applied": {
+                              "type": "string",
+                              "enum": [
+                                "relevance",
+                                "newest",
+                                "nearest"
+                              ]
                             }
                           },
                           "required": [
                             "total",
                             "limit",
-                            "offset"
+                            "offset",
+                            "sort_applied"
                           ],
                           "additionalProperties": false
                         }
@@ -769,12 +858,21 @@
                             },
                             "offset": {
                               "type": "number"
+                            },
+                            "sort_applied": {
+                              "type": "string",
+                              "enum": [
+                                "relevance",
+                                "newest",
+                                "nearest"
+                              ]
                             }
                           },
                           "required": [
                             "total",
                             "limit",
-                            "offset"
+                            "offset",
+                            "sort_applied"
                           ],
                           "additionalProperties": false
                         }

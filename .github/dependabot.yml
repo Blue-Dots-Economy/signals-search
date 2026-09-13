@@ -50,10 +50,22 @@ updates:
       # Hold the vitest major, and @vitest/coverage-v8 with it: coverage-v8 peers on
       # the EXACT vitest version, so moving one alone leaves an unmet peer and a
       # silently broken `pnpm test:coverage` — green CI, no lcov for SonarCloud.
-      # (Dependabot #91 proposed exactly that; see #97.) vite is now an explicit
-      # devDependency pinned to ^7 so the version vitest resolves is ours to choose,
-      # not whatever the lockfile happens to be holding — its major is held for the
-      # same lockstep reason.
+      # (Dependabot #91 proposed exactly that; see #97.) vite is an explicit
+      # devDependency so the version vitest resolves is ours to choose, not
+      # whatever the lockfile happens to be holding — its major is held for the
+      # same lockstep reason. Note the pin is ^8 now, not the ^7 this comment
+      # used to claim.
+      #
+      # Both vitest and coverage-v8 now sit at 4.1.11, taken as the
+      # CVE-2026-84373 floor (the advisory covers >= 2.1.0, < 4.1.11). Held from
+      # here is v5, and deliberately: it requires Vite 6.4+ and clears mocks by
+      # default before each test. Dependabot proposed that jump straight from
+      # 3.2.7 via the security path (#161) and it went red.
+      #
+      # Worth remembering why this hold had to be lifted at all: holding the
+      # major also held the 3.x -> 4.x move the CVE fix needed, so the patch
+      # could only reach us as a security PR proposing v5 that could never
+      # merge. A major hold must not become a floor hold.
       - dependency-name: "vitest"
         update-types: ["version-update:semver-major"]
       - dependency-name: "@vitest/coverage-v8"
