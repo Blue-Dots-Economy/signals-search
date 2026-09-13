@@ -1,13 +1,13 @@
-import postgres from 'postgres';
 import { Redis } from 'ioredis';
 import { loadConfig } from '../config.js';
+import { createApiSqlClient } from '../db/client.js';
 import { buildServer } from './server.js';
 import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
 
 async function main() {
   const cfg = loadConfig();
-  const sql = postgres(cfg.databaseUrl, { max: 8 });
+  const sql = createApiSqlClient(cfg.databaseUrl);
   const redis = new Redis(cfg.redisUrl);
   const embedder = new OpenAiCompatibleEmbedder(cfg.embedding);
   const registry = await loadNetworkRegistry(cfg.networkConfigPath);
