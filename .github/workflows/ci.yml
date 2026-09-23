@@ -1,21 +1,13 @@
 name: CI
 
 on:
-  # `feature` is the integration branch every plan PR targets (see CLAUDE.md
-  # "Workflow"); without it here, those PRs merged with no CI and regressions
-  # only surfaced at the develop promotion. Keep main/develop for the
-  # promotion path.
+  # No tags and no `feature` push here (#756). Both existed to drive the
+  # `publish-image` job that used to live in this file; image publishing moved
+  # out to build-image.yml, which owns the release-tag trigger now. PRs into
+  # `feature` still run CI against the merge commit, so the integration branch
+  # keeps its gate; what is gone is the duplicate post-merge run.
   push:
-    branches: [main, develop, feature]
-    # Release tags. Additive: the gated :develop publish below is unchanged.
-    #   v*.*.*      semver releases   e.g. v1.2.0
-    #   20*-s*-rc*  sprint release    e.g. 202608-s1-rc1
-    #               <YYYYMM>-s<sprint>-rc<candidate>. A fix for an issue found
-    #               in -rc1 ships as -rc2, so every candidate is its own image.
-    #               Supersedes the dated GA-<date> scheme, no longer built here.
-    # GitHub reads this workflow FROM THE TAGGED COMMIT, so a tag cut from a
-    # branch predating this change will not pick the new patterns up.
-    tags: ['v*.*.*', '20*-s*-rc*']
+    branches: [main, develop]
   pull_request:
     branches: [main, develop, feature]
 
@@ -85,10 +77,10 @@ jobs:
       #                         ungated scan exits 3 with "Not authorized or project
       #                         not found" on every dependency PR. Skip, don't run.
       #   `continue-on-error` — token present but the scan fails (SonarCloud outage,
-      #                         expired token, quality gate). publish-image depends on
-      #                         this job, so that must not stop a green build from
-      #                         publishing the :develop image; problems surface in the
-      #                         run log and SonarCloud's own commit check instead.
+      #                         expired token, quality gate). A scan that fails for
+      #                         reasons unrelated to the code must not redden CI;
+      #                         problems surface in the run log and SonarCloud's own
+      #                         commit check instead.
       # SONAR_TOKEN comes from the job-level `env` above — a step's own `env:` block
       # is not in scope for its own `if:`.
       - name: SonarCloud scan
@@ -98,11 +90,12 @@ jobs:
 
   # ── PR-path app-image smoke build (#138) ───────────────────────────────────
   # The app Dockerfile had no PR-path build at all: the only `docker build` in
-  # build-and-test is the Testcontainers Postgres image, and publish-image is
-  # gated on a develop/tag PUSH. So the first execution of a Dockerfile change
-  # was the same run that published :develop — the failure mode was "broken image
-  # shipped", not "red PR". This job closes that: it builds the runtime target
-  # and proves the image actually runs.
+  # build-and-test is the Testcontainers Postgres image, and publishing happens
+  # on a release tag in build-image.yml. So the first execution of a Dockerfile
+  # change would otherwise be the release build — the failure mode is "broken
+  # image shipped", not "red PR". This job closes that: it builds the runtime
+  # target and proves the image actually runs. It is now the ONLY pre-release
+  # exercise of the app Dockerfile, so keep it.
   #
   # Not just `node -e "require(...)"`: booting the container and probing /health
   # also catches a missing dist/ file, a bad CMD, and a boot-time crash, none of
@@ -146,7 +139,7 @@ jobs:
           load: true          # into the local docker store, so it can be run below
           push: false
           tags: signals-search:pr
-          # Shares the gha cache with publish-image, so this is usually a warm
+          # Shares the gha cache with build-image.yml, so this is usually a warm
           # build rather than a second cold one.
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -194,97 +187,4 @@ jobs:
         run: |
           echo "::warning::smoke-image skipped: no dhi.io credential on this run \
           (fork or Dependabot PR). The image build is still covered on the \
-          develop/tag publish path."
-
-  # Publish the :develop image only after build-and-test passes, on a develop
-  # push. Gating publish inside the CI run (rather than a separate push-triggered
-  # workflow) means a red build never publishes :develop, and there is no gap or
-  # default-branch caveat (as workflow_run would have). Manual builds: build-image.yml.
-  publish-image:
-    needs: build-and-test
-    # develop pushes publish :develop (as before); release tags publish an image
-    # named after the tag. Both go through `needs: build-and-test`, so a red build
-    # can never publish either — which is why this job lives here rather than in
-    # build-image.yml (the manual escape hatch, which has no such dependency).
-    if: >-
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      security-events: write   # Trivy image scan uploads SARIF to code-scanning
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
-      # The DHI base layers in the Dockerfile come from dhi.io, which refuses
-      # anonymous pulls even for the free Apache-2.0 catalog. Without this the
-      # build fails at the first FROM.
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: dhi.io
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/blue-dots-economy/signals-search
-          # `type=raw,value=develop` MUST stay gated on the develop branch. It was
-          # unconditional, which was harmless while this job only ran on develop —
-          # but now that tags reach it, an ungated entry would stamp :develop onto
-          # every release image, i.e. a release masquerading as the develop build.
-          #
-          # `type=ref,event=tag` emits the tag VERBATIM so the image tag equals the
-          # release tag (v1.2.0 -> v1.2.0, 202608-s1-rc1 -> 202608-s1-rc1).
-          #
-          # Comments stay OUT of the block scalar: it is passed to the action
-          # verbatim, not parsed as YAML.
-          tags: |
-            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
-            type=ref,event=tag
-            type=sha
-
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        id: build
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Image scanning (Sec-Audit A2 — Blue-Dots-Economy/signals-dpg#300).
-      # Mirrors build-image.yml. Both publish paths need it: build-image.yml is the
-      # manual escape hatch, this is the gated :develop publish — the stream that
-      # ships most often, so scanning only the manual path would leave the busiest
-      # artifact unscanned.
-      #
-      # Scanned by digest: buildx pushes to the registry without loading into the
-      # local docker image store, so `imageid` is not resolvable by Trivy.
-      - name: Trivy image scan
-        if: steps.build.outputs.digest != ''
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: image
-          image-ref: ghcr.io/blue-dots-economy/signals-search@${{ steps.build.outputs.digest }}
-          format: sarif
-          output: trivy-image.sarif
-          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          exit-code: "0"   # Phase A: report-only, never blocks the :develop publish
-
-      - name: Upload Trivy image SARIF
-        if: always() && steps.build.outputs.digest != ''
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image-app
+          release-tag publish path in build-image.yml."

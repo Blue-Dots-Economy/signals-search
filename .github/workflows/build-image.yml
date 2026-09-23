@@ -1,12 +1,24 @@
-name: build-image
+name: Build and Push image (signals-search)
 
-# Manual image build for the signals-search container image on GHCR. One image
+# Release + manual build of the signals-search container image on GHCR. One image
 # serves both the worker and the API (Helm picks the entrypoint via `command`).
 #
-# The AUTOMATIC develop publish is gated on CI and lives in ci.yml as the
-# `publish-image` job (needs the test job, same run/commit — so a red build
-# never publishes :develop). This workflow is the manual escape hatch only.
+# This is now the ONLY path that publishes the app image, and it publishes on a
+# release tag or a manual run — no branch push publishes (#756). The gated
+# :develop publish that used to live in ci.yml (`publish-image`) is gone: the
+# `:develop` tag it produced was mutable, and nothing consumed it (deployments
+# pin a release tag or an immutable sha- tag in bluedots-automation's
+# global-images.yaml). Matches signals-dpg and aggregator-dpg.
 on:
+  push:
+    # Release tags. Two schemes:
+    #   v*.*.*      semver releases   e.g. v1.2.0
+    #   20*-s*-rc*  sprint release    e.g. 202608-s1-rc1
+    #               <YYYYMM>-s<sprint>-rc<candidate>. A fix for an issue found
+    #               in -rc1 ships as -rc2, so every candidate is its own image.
+    # GitHub reads this workflow FROM THE TAGGED COMMIT, so a tag cut from a
+    # branch predating this change will not pick the patterns up.
+    tags: ['v*.*.*', '20*-s*-rc*']
   workflow_dispatch:
 
 jobs:
@@ -42,8 +54,20 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/blue-dots-economy/signals-search
+          # `type=ref,event=tag` emits the tag VERBATIM so the image tag equals the
+          # release tag (v1.2.0 -> v1.2.0, 202608-s1-rc1 -> 202608-s1-rc1).
+          # type=semver alone is not sufficient: it strips the leading `v`, and it
+          # cannot parse a 20*-s*-rc* tag at all (emits nothing, logs a warning).
+          #
+          # The hardcoded `type=raw,value=develop` is gone. It was unconditional, so
+          # with a tag trigger added it would have stamped `:develop` onto every
+          # release build too. `type=ref,event=branch` replaces it: a manual run from
+          # `develop` still produces `:develop`, but now only when that is the ref
+          # actually being built.
           tags: |
-            type=raw,value=develop
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
             type=sha
 
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

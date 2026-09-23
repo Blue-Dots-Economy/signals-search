@@ -1,26 +1,24 @@
-name: build-tei-image
+name: Build and Push image (tei-bge-m3)
 
 # Build and publish the TEI embedding image with BAAI/bge-m3 baked in
 # (docker/tei-bge-m3/Dockerfile). Consumed by the bluedots-automation
-# search-embeddings chart. Rarely changes — runs on manual dispatch and when the
-# Dockerfile / pinned revision changes on develop.
+# search-embeddings chart.
 #
-# PRs touching those same paths run a build WITHOUT pushing. Before this, a change
-# to the Dockerfile had no CI at all: it was first exercised only after merging to
-# develop, so a broken edit (an unavailable base tag, a pip resolution failure in
-# the download stage) surfaced past the point of review. Dependabot's docker-group
-# PR #85 is exactly that case.
+# MANUAL ONLY (#756). The previous `push: branches: [develop]` trigger published
+# on a branch push, and the `pull_request` trigger built without pushing.
+#
+# Two consequences worth knowing. First, nothing now exercises this Dockerfile
+# before a manual run: a broken edit (an unavailable base tag, a pip resolution
+# failure in the download stage) surfaces when someone builds it, not in review —
+# Dependabot's docker-group PR #85 was exactly that case. Second, this image is
+# NOT built by a release tag, so cutting a release does not refresh it; it has to
+# be rebuilt here by hand and its new tag pinned in global-images.yaml.
+#
+# Note this workflow does not use docker/metadata-action: the tags below are
+# hardcoded, and the stable one encodes the TEI version, so bumping the base
+# image in the Dockerfile means changing that tag AND the chart's pin.
 on:
   workflow_dispatch:
-  push:
-    branches: [develop]
-    paths:
-      - docker/tei-bge-m3/**
-      - .github/workflows/build-tei-image.yml
-  pull_request:
-    paths:
-      - docker/tei-bge-m3/**
-      - .github/workflows/build-tei-image.yml
 
 jobs:
   build-push:
@@ -32,10 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Not needed for the PR path, which only builds. Skipping it also keeps
-      # Dependabot-raised PRs working, where GITHUB_TOKEN is read-only.
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -45,7 +40,7 @@ jobs:
         id: build
         with:
           context: docker/tei-bge-m3
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           # Stable tag the search-embeddings chart pins to, plus an immutable sha tag.
           # NOTE: the stable tag encodes the TEI version, so bumping the base image
           # in the Dockerfile means changing this tag AND the chart's pin in
@@ -61,17 +56,11 @@ jobs:
       # surface in the estate and nothing in package.json describes its contents.
       #
       # Scanned by digest rather than by the mutable `cpu-1.7-bge-m3` tag, so each
-      # result is tied to the artifact built in that run.
-      #
-      # Gated on the EVENT, not on `steps.build.outputs.digest != ''`. A digest guard
-      # looks equivalent but is not: this job has no setup-buildx-action, so it uses
-      # the default docker driver, which populates the `digest` output from the
-      # locally-built image even when `push: false`. Trivy then resolves a digest for
-      # an image that exists in no registry and fails with MANIFEST_UNKNOWN. The
-      # event is the same condition that decides `push:` above, so it is the honest
-      # one to gate on.
+      # result is tied to the artifact built in that run. The old
+      # `github.event_name != 'pull_request'` guards are gone with the PR trigger:
+      # every run of this workflow now builds AND pushes, so the digest always
+      # refers to something that exists in the registry.
       - name: Trivy image scan
-        if: github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
@@ -82,7 +71,7 @@ jobs:
           exit-code: "0"   # Phase A: report-only, never fails the build
 
       - name: Upload Trivy image SARIF
-        if: always() && github.event_name != 'pull_request'
+        if: always()
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: trivy-image.sarif
