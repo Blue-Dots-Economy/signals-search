@@ -19,7 +19,21 @@ ENV HF_HUB_ENABLE_HF_TRANSFER=1
 # layout. Use the stable snapshot_download API rather than the CLI, whose flags
 # churn across huggingface_hub versions (the huggingface-cli -> hf rename broke
 # `huggingface-cli download --cache-dir`).
+#
+# TEI's cache lookup (hf-hub crate, CacheRepo::get) does NOT check
+# snapshots/<revision>/<file> directly — it first reads refs/<revision> to
+# resolve a commit hash, then looks in snapshots/<that hash>/<file>. When
+# revision is already a full commit SHA (our case, for reproducibility),
+# snapshot_download has no reason to write that refs/ pointer — a SHA needs no
+# resolving. Without it, EVERY file TEI's download_artifacts() asks for
+# (config.json, tokenizer.json, sentence_bert_config.json, ...) is a cache
+# miss, so it re-fetches all of them from huggingface.co on every pod start —
+# fully defeating the "bake it in, run offline" point of this whole image, and
+# fatal on a network with no route there. Write it explicitly so the cache
+# lookup succeeds and nothing here ever touches the network at runtime.
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='BAAI/bge-m3', revision='${BGE_M3_REVISION}', cache_dir='/hf')" \
+ && mkdir -p "/hf/models--BAAI--bge-m3/refs" \
+ && printf '%s' "${BGE_M3_REVISION}" > "/hf/models--BAAI--bge-m3/refs/${BGE_M3_REVISION}" \
  && chmod -R a+rX /hf
 
 FROM ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
