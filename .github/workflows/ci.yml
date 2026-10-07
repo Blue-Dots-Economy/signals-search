@@ -11,8 +11,16 @@ on:
   pull_request:
     branches: [main, develop, feature]
 
+# Least privilege by default: every job here only reads the repo. Jobs that need
+# more declare it themselves (zizmor excessive-permissions,
+# actions/missing-workflow-permissions).
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     # Job-level (not step-level) so the SonarCloud step's `if:` can read it —
     # the `secrets` context is unavailable in a step conditional, and a step's
@@ -24,6 +32,8 @@ jobs:
       # the right commits (a shallow clone leaves it blind to history).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Do not leave the job token in .git/config for later steps.
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -105,6 +115,8 @@ jobs:
   # that touches Postgres and Redis; deliberately not probed here.)
   smoke-image:
     name: smoke-image (PR-path Dockerfile build)
+    permissions:
+      contents: read
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     # Job-level so the step `if:`s below can read it — the `secrets` context is
@@ -114,6 +126,9 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Do not leave the job token in .git/config for later steps.
+          persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 

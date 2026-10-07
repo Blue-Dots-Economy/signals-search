@@ -26,6 +26,16 @@ updates:
       interval: "monthly"
       time: "03:00"
       timezone: "UTC"
+    # Do not adopt a release until it has been public for 7 days. A freshly
+    # published version is the window in which a compromised release is still
+    # undetected. GitHub applies an implicit 3-day cooldown already; 7 is the
+    # threshold zizmor checks for (zizmor dependabot-cooldown).
+    #
+    # This does NOT delay security patches: per GitHub's docs the cooldown option
+    # is only available for version updates, not security updates. A CVE fix still
+    # arrives immediately.
+    cooldown:
+      default-days: 7
     # The limit counts open *version-update* PRs. Grouped updates plus a few
     # singletons can sit right at 5 and silently block any further npm PR from
     # being raised (observed in aggregator-dpg on 2026-08-04). 10 leaves headroom
@@ -90,6 +100,16 @@ updates:
       interval: "monthly"
       time: "03:15"
       timezone: "UTC"
+    # Do not adopt a release until it has been public for 7 days. A freshly
+    # published version is the window in which a compromised release is still
+    # undetected. GitHub applies an implicit 3-day cooldown already; 7 is the
+    # threshold zizmor checks for (zizmor dependabot-cooldown).
+    #
+    # This does NOT delay security patches: per GitHub's docs the cooldown option
+    # is only available for version updates, not security updates. A CVE fix still
+    # arrives immediately.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "ci"
@@ -116,6 +136,16 @@ updates:
       interval: "monthly"
       time: "03:30"
       timezone: "UTC"
+    # Do not adopt a release until it has been public for 7 days. A freshly
+    # published version is the window in which a compromised release is still
+    # undetected. GitHub applies an implicit 3-day cooldown already; 7 is the
+    # threshold zizmor checks for (zizmor dependabot-cooldown).
+    #
+    # This does NOT delay security patches: per GitHub's docs the cooldown option
+    # is only available for version updates, not security updates. A CVE fix still
+    # arrives immediately.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "docker"
