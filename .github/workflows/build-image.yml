@@ -1,16 +1,93 @@
-name: build-image
+name: Build and Push image (signals-search)
 
-# Manual image build for the signals-search container image on GHCR. One image
+# Release + manual build of the signals-search container image on GHCR. One image
 # serves both the worker and the API (Helm picks the entrypoint via `command`).
 #
-# The AUTOMATIC develop publish is gated on CI and lives in ci.yml as the
-# `publish-image` job (needs the test job, same run/commit — so a red build
-# never publishes :develop). This workflow is the manual escape hatch only.
+# This is now the ONLY path that publishes the app image, and it publishes on a
+# release tag or a manual run — no branch push publishes (#756). The gated
+# :develop publish that used to live in ci.yml (`publish-image`) is gone: the
+# `:develop` tag it produced was mutable, and nothing consumed it (deployments
+# pin a release tag or an immutable sha- tag in bluedots-automation's
+# global-images.yaml). Matches signals-dpg and aggregator-dpg.
 on:
+  push:
+    # Release tags. Two schemes:
+    #   v*.*.*      semver releases   e.g. v1.2.0
+    #   20*-s*-rc*  sprint release    e.g. 202608-s1-rc1
+    #               <YYYYMM>-s<sprint>-rc<candidate>. A fix for an issue found
+    #               in -rc1 ships as -rc2, so every candidate is its own image.
+    # GitHub reads this workflow FROM THE TAGGED COMMIT, so a tag cut from a
+    # branch predating this change will not pick the patterns up.
+    tags: ['v*.*.*', '20*-s*-rc*']
   workflow_dispatch:
+    inputs:
+      skip_ci_check:
+        description: 'Publish even if CI has not passed for this commit (emergency use only)'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
+  # Gate: refuse to publish an image built from a commit CI has not passed
+  # (Blue-Dots-Economy/signals-dpg#765). Until #756 split publishing out of
+  # ci.yml, this was enforced by `needs: build-and-test` on the publish-image
+  # job. That job is gone, and `needs:` cannot reach across workflows, so the
+  # dependency is re-expressed as a lookup instead.
+  #
+  # It asks about ci.yml RUNS rather than individual check runs, so it stays
+  # correct if the job names or the job graph inside CI ever change.
+  #
+  # Cheap by design: no re-run of the suite (which spins up Testcontainers
+  # here), just an API call. A release tag is cut from develop or main, where
+  # CI has already run on that exact commit.
+  verify-ci:
+    name: Verify CI passed for this commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read   # read workflow runs for this SHA
+    steps:
+      - name: Require a successful ci.yml run for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          SKIP: ${{ inputs.skip_ci_check }}
+        run: |
+          set -euo pipefail
+
+          # `inputs` is empty on a tag push, so this is false unless someone
+          # dispatched with the box ticked.
+          if [ "${SKIP:-false}" = "true" ]; then
+            echo "::warning title=CI gate bypassed::Publishing ${SHA} without checking CI, because skip_ci_check was set on this dispatch."
+            exit 0
+          fi
+
+          runs=$(gh api --paginate \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}" \
+            --jq '.workflow_runs[] | "\(.status)/\(.conclusion // "pending")\t\(.event)\t\(.html_url)"')
+
+          # FAIL CLOSED on no runs at all. This is the realistic accident: a tag
+          # cut from a commit CI never saw (a feature branch, a local commit),
+          # not a tag cut from a red one. A check for "not failed" would pass it.
+          if [ -z "${runs}" ]; then
+            echo "::error title=No CI run for this commit::ci.yml has never run for ${SHA}, so there is nothing to verify. Cut the release tag from a commit on develop or main that CI has already tested."
+            exit 1
+          fi
+
+          echo "ci.yml runs found for ${SHA}:"
+          echo "${runs}" | sed 's/^/  /'
+
+          if echo "${runs}" | grep -q '^completed/success'; then
+            echo "CI passed for ${SHA} — proceeding to build."
+            exit 0
+          fi
+
+          echo "::error title=CI did not pass::No successful ci.yml run exists for ${SHA}. Fix CI on that commit and re-tag, or re-run this workflow manually with skip_ci_check if this is a deliberate emergency publish."
+          exit 1
+
   build-push:
+    needs: verify-ci
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -18,10 +95,13 @@ jobs:
       security-events: write   # Trivy image scan uploads SARIF to code-scanning
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Do not leave the job token in .git/config for later steps.
+          persist-credentials: false
 
       # docker-container driver — required for the type=gha build cache below
       # (the default docker driver can't export cache).
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # The DHI base layers in the Dockerfile come from dhi.io, which refuses
       # anonymous pulls even for the free Apache-2.0 catalog. Without this the
@@ -42,11 +122,23 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/blue-dots-economy/signals-search
+          # `type=ref,event=tag` emits the tag VERBATIM so the image tag equals the
+          # release tag (v1.2.0 -> v1.2.0, 202608-s1-rc1 -> 202608-s1-rc1).
+          # type=semver alone is not sufficient: it strips the leading `v`, and it
+          # cannot parse a 20*-s*-rc* tag at all (emits nothing, logs a warning).
+          #
+          # The hardcoded `type=raw,value=develop` is gone. It was unconditional, so
+          # with a tag trigger added it would have stamped `:develop` onto every
+          # release build too. `type=ref,event=branch` replaces it: a manual run from
+          # `develop` still produces `:develop`, but now only when that is the ref
+          # actually being built.
           tags: |
-            type=raw,value=develop
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
             type=sha
 
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
         with:
           context: .
@@ -79,7 +171,7 @@ jobs:
 
       - name: Upload Trivy image SARIF
         if: always() && steps.build.outputs.digest != ''
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image-app
