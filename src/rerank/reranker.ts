@@ -1,13 +1,9 @@
 export type RerankerOptions = { baseUrl: string; model: string; apiKey?: string };
 
-export interface Reranker {
-  /** Returns document indices ordered best-first. */
-  rerank(query: string, texts: string[]): Promise<number[]>;
-}
-
-export class TeiReranker implements Reranker {
+export class TeiReranker {
   constructor(private readonly opts: RerankerOptions) {}
 
+  /** Returns document indices ordered best-first. */
   async rerank(query: string, texts: string[]): Promise<number[]> {
     if (texts.length === 0) return [];
     const headers: Record<string, string> = { 'content-type': 'application/json' };
