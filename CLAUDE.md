@@ -77,6 +77,30 @@ Core principle: **vectorize at write, rank at read.** No pairwise scores are sto
 
 **PII safety and interaction-matrix authorization** (cross-cutting, span api/ingest/config) are in `.claude/rules/pii-and-authz.md` — path-scoped, loads automatically when you touch those directories.
 
+## Code comments
+
+Comments say what the code cannot. Git, PRs, issues and `docs/` hold the rest.
+
+**Keep:**
+
+- The reason for a non-obvious choice, in one sentence.
+- Constraints and invariants: idempotency, ordering, transactions, fail-closed behaviour, precision rules (e.g. timestamps across the JS boundary).
+- Security, PII and authorisation rules (for example "Never log this value.").
+- Behaviour of external systems and contracts the code depends on: Signals-DPG, TEI, Postgres/pgvector, Redis streams, network.json.
+- Known limitations, stated in the present tense. Track the fix in an issue; do not cite the issue number.
+- Public API docs that tell a caller something the signature does not: failure results, side effects, units.
+- Tool directives (`eslint-disable`, `@ts-expect-error`, `NOSONAR` with its rule key and reason, `@deprecated`, coverage ignores).
+
+**Do not write:**
+
+- History: issue or PR numbers, phases, plan or spec section IDs, "previously", "used to", "was renamed".
+- Design essays or benchmark write-ups. Put them in `docs/architecture/` and leave a one-line pointer. Pointers to any `docs/` file are fine.
+- Comments that restate the code, or `@param` / `@returns` lines that only repeat the name and type.
+- Banners, dividers, ALL-CAPS emphasis, "NOTE:", "deliberately".
+- Commented-out code.
+
+**Style:** short, present-tense statements about the current code. A wrong comment is worse than none: when code changes, fix or delete the comments that describe it.
+
 ## Workflow
 
 - Branch model: `develop` (base) → `feature` (integration) → one branch + PR per plan into `feature`. `Closes #N` only auto-fires on merge to the default branch (`develop`), not into `feature`. PRs use `.github/PULL_REQUEST_TEMPLATE.md` (Summary / **Release Notes** / Checklist; `no-release-notes` and `no-doc-update` labels waive the respective sections).
