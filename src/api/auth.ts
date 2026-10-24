@@ -10,10 +10,11 @@ export function hashApiKey(rawKey: string): string {
 export async function authenticateApiKey(sql: Sql, rawKey: string | undefined): Promise<Caller | null> {
   if (!rawKey) return null;
   const hashed = hashApiKey(rawKey);
-  // Validity mirrors better-auth's own gate: not-disabled, not-expired,
-  // not-exhausted. We READ remaining but never decrement it — better-auth
-  // (Signals-DPG) owns the key write path; a decrement here would race it.
-  // Hash-scheme parity with better-auth is verified separately (PLAN.md 2.2).
+  // Same validity checks and hash as Signals-DPG's verifyApiKey: enabled, not
+  // expired, not exhausted. `remaining` is read, never decremented; neither
+  // service writes it. Keys are minted by Signals-DPG's service-user provisioning
+  // (provision_service_users.sql, seed_service_users.ts). Unlike Signals-DPG,
+  // a row with a NULL user_id is rejected here.
   const rows = await sql<{ user_id: string | null }[]>`
     SELECT user_id FROM "apikey"
     WHERE key = ${hashed}
