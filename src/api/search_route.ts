@@ -158,8 +158,8 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     hasSpatialFilter: !!spatialParam,
   });
 
-  // Rerank needs free text (the cross-encoder scores query vs document), a
-  // configured endpoint, and a resolved `relevance` sort; reranking a recency or
+  // Rerank needs RERANK_DEFAULT, an endpoint, free text (the cross-encoder scores
+  // query vs document) and a resolved `relevance` sort; reranking a recency or
   // distance page would contradict meta.sort_applied. It over-fetches `topN`
   // rows from offset 0 and slices the page back out, so a page beyond that
   // window skips reranking and pages natively. willRerank must gate both the
