@@ -25,9 +25,9 @@ The geometry cast in the exact test defeats the `item_search_geo_gist` index. Th
 
 ## Why the prefilter is skipped for boxes spanning 180° or more
 
-A geography polygon's edges follow the shorter great-circle arc. An envelope wider than 180° is read as going the other way round the globe and becomes its own complement, so the prefilter excludes everything and the ANDed query returns nothing. An envelope edge whose endpoints are exactly antipodal makes the `::geography` cast throw `Antipodal (180 degrees long) edge detected!`, which surfaces as a 500.
+A geography polygon's edges follow the shorter great-circle arc. An envelope wider than 180° is read as going the other way round the globe and becomes its own complement, so the prefilter excludes everything and the ANDed query returns nothing. An envelope edge whose endpoints are exactly antipodal makes the `::geography` cast throw `Antipodal (180 degrees long) edge detected!`; without the guard below that would surface as a 500.
 
-Measured with a point at 12.9°N, 77.6°E inside every box:
+Measured without the guard, with a point at 12.9°N, 77.6°E inside every box:
 
 | box | prefilter | exact planar |
 | --- | --- | --- |
