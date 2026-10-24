@@ -11,23 +11,15 @@ export const ContextSchema = z.object({
 
 const DwithinClauseSchema = z.object({
   op: z.literal('s_dwithin'),
-  // Optional: when omitted, the search center is taken from the anchor item
-  // (`intent.item.id`) — "search near this profile's own location". When
-  // present, the explicit point is used and the profile's location is ignored.
+  // When omitted, the centre is the anchor item's stored location.
   geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }).optional(),
-  // Optional: falls back to SEARCH_DEFAULT_DISTANCE_METERS when omitted.
+  // Defaults to SEARCH_DEFAULT_DISTANCE_METERS.
   distanceMeters: z.number().positive().optional(),
 });
 
-// A rectangular viewport filter (#644 "search this area"). Exists because a map
-// viewport IS a rectangle, and approximating one with its circumscribed circle
-// always covers more ground than the map showed — so the list would include
-// items the user could not see, which is why the viewport area mode was
-// originally dropped from the spec (D6).
-//
-// All four bounds are REQUIRED: a partial box has no sensible meaning, and
-// defaulting the missing side would silently search somewhere the caller did
-// not ask for. Ordering is validated in IntentSchema's refine below.
+// Viewport filter ("search this area"); a circle around the viewport would
+// return items the map does not show. All four bounds are required so a missing
+// side is never silently defaulted. Bound order is checked in IntentSchema.
 const BboxClauseSchema = z.object({
   op: z.literal('bbox'),
   minLat: z.number().min(-90).max(90),
@@ -36,9 +28,7 @@ const BboxClauseSchema = z.object({
   maxLng: z.number().min(-180).max(180),
 });
 
-// Discriminated on `op`, which — combined with the `.max(1)` on the array below
-// — is what makes a radius and a bbox MUTUALLY EXCLUSIVE: supplying both is two
-// clauses and is rejected, rather than one silently winning.
+// With `.max(1)` on the array below, a radius and a bbox are mutually exclusive.
 const SpatialClauseSchema = z.discriminatedUnion('op', [DwithinClauseSchema, BboxClauseSchema]);
 
 const FilterClauseSchema = z.object({
@@ -57,15 +47,11 @@ const FilterClauseSchema = z.object({
   }
 });
 
-// Explicit ordering (#644). ABSENT is meaningful: it preserves the historical
-// inferred behaviour (cosine > distance > recency), so existing callers are
-// unaffected. See resolveSort in search_route.ts.
+// Absent selects the inferred ordering (see resolveSort in search_route.ts).
 export const SortModeSchema = z.enum(['relevance', 'newest', 'nearest']);
 export type SortMode = z.infer<typeof SortModeSchema>;
 
-// A centre used ONLY for ordering — it never produces a WHERE predicate.
-// Deliberately NOT subject to the anchorless-spatial refine below: an ordering
-// centre needs no anchor, because it filters nothing.
+// Used only for ordering, never as a WHERE predicate, so it needs no anchor.
 const OrderingCenterSchema = z.object({
   type: z.literal('Point'),
   coordinates: z.tuple([z.number(), z.number()]), // GeoJSON order: [lng, lat]
@@ -73,30 +59,22 @@ const OrderingCenterSchema = z.object({
 
 export const IntentSchema = z.object({
   textSearch: z.string().min(1).optional(),
-  // z.guid(), not z.uuid(): zod 4 tightened .uuid() to enforce the RFC 9562
-  // version/variant nibbles, which would reject ids that this API has always
-  // accepted (any 8-4-4-4-12 hex string, e.g. '1111...-1111'). z.guid() is zod 4's
-  // name for the loose form and preserves the pre-zod-4 contract exactly.
-  // Tightening to RFC-conforming ids is a deliberate API change, not a side
-  // effect of a dependency bump — see #98.
+  // z.guid(), not z.uuid(): zod 4's .uuid() enforces RFC 9562 version/variant
+  // nibbles and would reject accepted ids like '1111...-1111'. Tightening this
+  // is an API change.
   item: z.object({ id: z.guid() }).optional(),
-  // At most one spatial clause: the search applies a single radius filter
-  // (only the first clause was ever consumed), so reject extras explicitly
-  // rather than silently ignoring them.
+  // The search applies one spatial clause, so extras are rejected, not ignored.
   spatial: z.array(SpatialClauseSchema)
     .max(1, 'at most one spatial clause is supported — a point radius (s_dwithin) and a bbox are mutually exclusive')
     .optional(),
   filters: z.array(FilterClauseSchema).optional(),
-  // Both new fields live INSIDE intent, never on `message` beside pagination:
-  // cacheKey() hashes {networkId, domain, itemType, intent, pagination}, so
-  // placing them here makes the cache key cover them for free. Outside intent,
-  // two requests differing only in `sort` would share one cache entry.
+  // sort and orderingCenter must stay inside intent so cacheKey() covers them;
+  // elsewhere, requests differing only in `sort` would share a cache entry.
   sort: SortModeSchema.optional(),
   orderingCenter: OrderingCenterSchema.optional(),
 }).superRefine((intent, ctx) => {
-  // An s_dwithin clause without `geometry` derives the search center from the
-  // anchor item, so it requires `item.id`. Without an anchor there is no point
-  // to search around. A bbox carries its own bounds, so it never needs one.
+  // An s_dwithin clause without geometry takes its centre from the anchor, so it
+  // requires item.id. A bbox carries its own bounds.
   const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => s.op === 's_dwithin' && !s.geometry);
   if (hasAnchorlessSpatial && !intent.item?.id) {
     ctx.addIssue({
@@ -106,12 +84,9 @@ export const IntentSchema = z.object({
     });
   }
 
-  // Bbox bounds must be correctly ordered. Rejected rather than normalised: a
-  // transposed box is a caller bug, and silently swapping the corners would
-  // search an area they did not ask for. A box with minLng > maxLng is how an
-  // antimeridian-crossing viewport would arrive — unsupported, and failing
-  // loudly is better than returning an empty result set that looks like
-  // "nothing here".
+  // Misordered bounds are rejected, not swapped: swapping would search an area
+  // the caller did not ask for. minLng > maxLng is an antimeridian-crossing
+  // viewport, which is unsupported and would otherwise return an empty page.
   for (const s of intent.spatial ?? []) {
     if (s.op !== 'bbox') continue;
     if (s.minLat >= s.maxLat) {
@@ -142,10 +117,8 @@ export const SearchRequestSchema = z.object({
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
-// Body shape for POST /v1/search/flat: a flat object of dot-delimited canonical
-// paths (numeric segment = array index), values may all be strings. It cannot be
-// described by SearchRequestSchema, so the route accepts this permissive record
-// and validates against SearchRequestSchema AFTER unflattening + JSON-parsing.
+// POST /v1/search/flat body: a flat record of dot-delimited paths, validated
+// against SearchRequestSchema after unflattening.
 export const FlatSearchRequestSchema = z.record(z.string(), z.unknown());
 
 export const ItemResultSchema = z.object({
@@ -173,41 +146,34 @@ export const SearchResponseSchema = z.object({
       total: z.number(),
       limit: z.number(),
       offset: z.number(),
-      // Always present: the order actually applied after the contract §1.2
-      // fallbacks, so a client can never claim an order it did not get. When
-      // the request sent no `sort`, this names whichever inferred path ran.
+      // The order actually applied, after any degradation or inference.
       sort_applied: SortModeSchema,
     }),
   }),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
-// A fully-qualified reference to a single indexed item (its composite PK), with
-// the redundant `item_` prefix dropped since the nesting already says "item".
-// `network` lives on each ref (not hoisted) so source and target may be in
-// different networks — cross-network relevance is a supported use case, gated
-// by the cross-network interaction matrix. `id` is a UUID for parity with the
-// items table and the anchor lookup in /v1/search.
+// A reference to one indexed item (its composite PK). `network` is per ref
+// because source and target may be in different networks, gated by the
+// cross-network interaction matrix.
 export const RelevanceRefSchema = z.object({
   network: z.string().min(1),
   domain: z.string().min(1),
   type: z.string().min(1),
-  // z.guid() rather than z.uuid() — see the note on IntentSchema.item above.
+  // z.guid(), not z.uuid(): see IntentSchema.item.
   id: z.guid(),
 });
 
-// POST /v1/relevance body: the two items whose stored embeddings are compared.
-// Directional — `source` is the item scored FROM (e.g. the viewer's profile),
-// `target` the item scored AGAINST — matching the interaction matrix's from→to.
+// POST /v1/relevance body. Directional: `source` (e.g. the viewer's profile) is
+// scored against `target`, matching the interaction matrix's from→to.
 export const RelevanceRequestSchema = z.object({
   source: RelevanceRefSchema,
   target: RelevanceRefSchema,
 });
 export type RelevanceRequest = z.infer<typeof RelevanceRequestSchema>;
 
-// POST /v1/relevance response: relevance as a percentage in [0, 100] derived
-// from the cosine similarity of the two items' embeddings (higher = more
-// similar). Band/confidence/reasoning are intentionally omitted for V1.
+// POST /v1/relevance response: cosine similarity of the two embeddings as a
+// percentage in [0, 100].
 export const RelevanceResponseSchema = z.object({
   score: z.number(),
 });

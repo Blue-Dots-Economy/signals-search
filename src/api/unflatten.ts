@@ -1,31 +1,17 @@
-// Rebuilds a nested object/array structure from a flat object whose keys are
-// dot-delimited canonical paths. A path segment that is a non-negative integer
-// denotes an array index; any other segment is an object key. Each leaf value,
-// if a string, is JSON-parsed to restore its real type (number/boolean/array),
-// falling back to the raw string when it is not valid JSON. Non-string leaves
-// pass through unchanged.
-//
-// This lets a caller that can only emit a flat object of strings (e.g. a Raya
-// LLM tool) reconstruct the canonical, correctly-typed nested search request.
-// See docs/superpowers/specs/2026-07-14-search-flat-raya-design.md.
+// Rebuilds a nested object from a flat object of dot-delimited paths. A
+// non-negative integer segment is an array index. String leaves are JSON-parsed
+// to restore their type, falling back to the raw string.
+// Design: docs/superpowers/specs/2026-07-14-search-flat-raya-design.md
 
 const INDEX = /^\d+$/;
 
-// Upper bound on a numeric path segment (array index). Without it, a single
-// tiny key like "message.intent.filters.1000000000.value" would inflate into a
-// ~10⁹-length sparse array; Zod validation then walks the whole `length` and
-// allocates an issue per hole → event-loop stall / OOM from one small request.
-// Real requests need only a handful of array elements (one spatial clause, a
-// couple of coordinates, a few filters), so a few thousand is ample headroom
-// while keeping any allocation trivially cheap. Exceeding it throws, and the
-// route maps the throw to a 400 (see registerSearchRoute).
+// Caps array indexes: one key like "filters.1000000000.value" would otherwise
+// build a huge sparse array that Zod walks hole by hole (event-loop stall or
+// OOM). Exceeding it throws, which the route maps to a 400.
 const MAX_ARRAY_INDEX = 10_000;
 
-// Segments that could walk into or mutate an object's prototype. The body is
-// authenticated-but-externally-shaped, so a key like "__proto__.x" must never
-// reach `node[seg] = ...` — that would pollute Object.prototype process-wide,
-// before validation runs. Any key containing one of these segments is dropped
-// (they are never valid canonical paths anyway).
+// Keys containing these segments are dropped: "__proto__.x" reaching
+// `node[seg] = ...` would pollute Object.prototype before validation runs.
 const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function parseLeaf(value: unknown): unknown {
