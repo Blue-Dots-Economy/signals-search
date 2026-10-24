@@ -12,9 +12,7 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.test.ts', 'src/**/main.ts'],
     },
-    // Generous hook timeout so a cold Testcontainers image build (pgvector +
-    // postgis) on a cache miss does not trip the default. CI pre-builds the
-    // image to keep this fast; this is the local/cold-build backstop.
+    // Covers a cold Testcontainers image build (CI pre-builds the image).
     hookTimeout: 300_000,
   },
 });

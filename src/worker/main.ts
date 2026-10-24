@@ -51,14 +51,12 @@ async function main() {
   const guardedSweep = makeGuarded(sweep);
   const sweepTimer = setInterval(guardedSweep, cfg.sweep.intervalMs);
 
-  // Health surface + progress heartbeat so a wedged loop is visible to k8s
-  // (readiness goes 503) instead of looking healthy forever.
+  // A wedged loop turns /ready into a 503 instead of looking healthy forever.
   const heartbeat = new WorkerHeartbeat(cfg.worker.heartbeatStaleMs);
   const healthServer = startWorkerHealthServer(cfg.worker.healthPort, heartbeat);
   heartbeat.markBooted();
 
-  // Graceful shutdown: flip the flag so the loop exits after its current
-  // XREADGROUP block (<= 5s), then the cleanup below closes everything.
+  // The loop exits after its current XREADGROUP block (<= 5s), then cleans up.
   let stopping = false;
   const requestStop = (signal: string) => {
     console.log('worker received', signal, '— shutting down');
@@ -69,16 +67,15 @@ async function main() {
 
   while (!stopping) {
     heartbeat.mark();
-    // Reclaim messages stranded by a dead consumer (idle >= pelMinIdleMs), then
-    // read fresh ones; both flow through the same idempotent process+ack path.
+    // Reclaimed (stranded by a dead consumer) and fresh messages share the same
+    // idempotent process+ack path.
     const reclaimed = await reclaimPending(
       redis, cfg.ingest.stream, cfg.ingest.consumerGroup, cfg.ingest.consumerName, cfg.ingest.pelMinIdleMs, 50,
     ).catch((err) => { console.error('reclaimPending failed', err); return []; });
     const fresh = await readBatch(redis, cfg.ingest.stream, cfg.ingest.consumerGroup, cfg.ingest.consumerName, 50, 5000);
     const { stream, consumerGroup: group, dlqStream, dlqMaxLen, maxDeliveries } = cfg.ingest;
     for (const msg of [...reclaimed, ...fresh]) {
-      // Schema-invalid event — permanent poison, never processable. Park to the
-      // DLQ and ack immediately so it stops redelivering forever.
+      // Schema-invalid events are permanent poison: dead-letter and ack at once.
       if (msg.event === null) {
         console.error('invalid ingestion event; dead-lettering', msg.id, msg.parseError);
         await parkToDlq(redis, dlqStream, dlqMaxLen, msg, `invalid: ${msg.parseError ?? 'unknown'}`);
@@ -89,9 +86,8 @@ async function main() {
         await processEvent({ event: msg.event, sql, repo, embedder, fieldsFor, modelVersion });
         await ackMessages(redis, stream, group, [msg.id]);
       } catch (err) {
-        // Transient failure: leave unacked to retry, UNLESS it has already been
-        // delivered maxDeliveries times — then treat as poison and dead-letter
-        // it, so one reliably-failing message can't loop forever burning embeds.
+        // Left unacked to retry, until maxDeliveries: then it is dead-lettered so
+        // a reliably failing message cannot loop forever burning embeds.
         const deliveries = await getDeliveryCount(redis, stream, group, msg.id).catch(() => 0);
         if (deliveries >= maxDeliveries) {
           console.error('processEvent failed >= maxDeliveries; dead-lettering', msg.id, deliveries, err);
@@ -105,8 +101,6 @@ async function main() {
     }
   }
 
-  // Loop exited via graceful stop — tear down in-flight timers, the health
-  // server, and the Redis/Postgres connections so the process can exit cleanly.
   clearInterval(sweepTimer);
   await new Promise<void>((resolve) => healthServer.close(() => resolve()));
   await redis.quit().catch(() => redis.disconnect());

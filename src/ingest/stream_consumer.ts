@@ -1,9 +1,8 @@
 import type { Redis } from 'ioredis';
 import { z } from 'zod';
 
-/** Ingestion event schema. `op` defaults to `upsert` only when the field is
- *  absent (legacy producers); a present-but-unknown `op` is rejected so a future
- *  op type is surfaced as poison rather than silently mis-processed as an upsert. */
+/** `op` defaults to `upsert` only when absent; an unknown `op` is rejected as
+ *  poison rather than mis-processed as an upsert. */
 const ItemEventSchema = z.object({
   item_network: z.string().min(1),
   item_domain: z.string().min(1),
@@ -15,10 +14,8 @@ const ItemEventSchema = z.object({
 
 export type ItemEvent = z.infer<typeof ItemEventSchema>;
 
-/** A raw stream entry plus its parse outcome. `event` is null when the fields
- *  failed schema validation (`parseError` explains why) — such messages are
- *  poison and must be dead-lettered, never processed. `fields` is retained so a
- *  poison message can be re-published verbatim to the DLQ for triage. */
+/** `event` is null when validation failed: such messages are poison and must
+ *  be dead-lettered, never processed. `fields` is kept for verbatim DLQ re-publish. */
 export type StreamMessage = { id: string; fields: string[]; event: ItemEvent | null; parseError?: string };
 
 export async function ensureConsumerGroup(redis: Redis, stream: string, group: string): Promise<void> {
@@ -35,8 +32,6 @@ function fieldsToMap(fields: string[]): Record<string, string> {
   return m;
 }
 
-/** Validate a raw stream entry against {@link ItemEventSchema}. Returns the
- *  typed event, or `event: null` + a `parseError` string when invalid. */
 export function parseEvent(fields: string[]): { event: ItemEvent | null; parseError?: string } {
   const parsed = ItemEventSchema.safeParse(fieldsToMap(fields));
   if (!parsed.success) {
@@ -82,9 +77,7 @@ export async function reclaimPending(
   return out;
 }
 
-/** Delivery count for a single pending entry (how many times it has been handed
- *  to a consumer). Returns 0 when the id is no longer pending. Used to decide
- *  when a repeatedly-failing message has become poison. */
+/** How many times a pending entry has been delivered; 0 when no longer pending. */
 export async function getDeliveryCount(redis: Redis, stream: string, group: string, id: string): Promise<number> {
   // XPENDING <key> <group> <start> <end> <count> → [[id, consumer, idleMs, deliveryCount], ...]
   const res = (await redis.xpending(stream, group, id, id, 1)) as [string, string, number, string][];
@@ -92,9 +85,8 @@ export async function getDeliveryCount(redis: Redis, stream: string, group: stri
   return Number(res[0][3]);
 }
 
-/** Re-publish a poison message verbatim to the dead-letter stream (bounded by
- *  `MAXLEN ~ maxLen`), tagged with the reason and source id for triage. The
- *  caller must still ack the original on its group so it stops redelivering. */
+/** Re-publishes a poison message verbatim to the DLQ, tagged for triage. The
+ *  caller must still ack the original so it stops redelivering. */
 export async function parkToDlq(
   redis: Redis, dlqStream: string, maxLen: number, msg: StreamMessage, reason: string,
 ): Promise<void> {
