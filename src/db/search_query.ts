@@ -1,9 +1,8 @@
 import type { Sql, PendingQuery, Row } from 'postgres';
 
 export type FilterClause = { op: 'eq' | 'neq' | 'in' | 'contains' | 'contains_any' | 'gt' | 'gte' | 'lt' | 'lte'; target: string; value: unknown };
-// Re-declared here rather than imported from the API layer: search_route.ts
-// imports from this module and never the reverse, and that direction is worth
-// preserving. The wire enum lives in api/schemas.ts.
+// Re-declared rather than imported so the db layer never imports from api/.
+// The wire enum lives in api/schemas.ts.
 export type SortMode = 'relevance' | 'newest' | 'nearest';
 
 export type SearchParams = {
@@ -11,42 +10,31 @@ export type SearchParams = {
   item_domain: string;
   item_type: string;
   queryVector?: number[];
-  /** ST_DWithin FILTER — decides membership. Unchanged. */
+  /** ST_DWithin filter: decides membership. */
   spatial?: { lat: number; lng: number; distanceMeters: number };
   /**
-   * Rectangular viewport FILTER — decides membership, exactly like `spatial`,
-   * and mutually exclusive with it (enforced at the schema layer). Contributes
-   * NO ordering: a bbox has a centre, but using it to order would make "search
-   * this area" quietly change the sort. A caller that wants nearest-first
-   * within a viewport sends `orderingCenter` alongside it.
+   * Viewport filter: decides membership like `spatial` and is mutually exclusive
+   * with it (schema-enforced). It contributes no ordering, so "search this area"
+   * never changes the sort; send `orderingCenter` too for nearest-first.
    */
   bbox?: { minLat: number; minLng: number; maxLat: number; maxLng: number };
   /**
-   * Centre used ONLY to ORDER. Never contributes a WHERE predicate, so
-   * `sort: 'nearest'` returns the whole candidate set nearest-first instead of
-   * truncating it (#644). When `spatial` is also set, the caller may pass its
-   * centre here too.
+   * Centre used only to order. It never adds a WHERE predicate, so
+   * `sort: 'nearest'` returns the whole candidate set nearest-first.
    */
   orderingCenter?: { lat: number; lng: number };
   /**
-   * Resolved by the caller via resolveSort — never inferred here.
-   *
-   * OPTIONAL, and absent is meaningful: it selects the historical inferred
-   * ordering (cosine > distance > indexed_at recency) so a caller that sends no
-   * `sort` gets byte-identical behaviour to before #644.
+   * Resolved by the caller via resolveSort, never inferred here. Absent selects
+   * the inferred ordering (cosine, else distance, else indexed_at recency) that
+   * callers sending no `sort` rely on.
    */
   sort?: SortMode;
   /**
-   * #148: applied as an additional value-match WHERE predicate, ANDed with
-   * everything else — NOT as a competing query vector. So text narrows while
-   * an ANCHOR's embedding still ranks. Matched against the `vectorize: true`
-   * fields, so narrowing and cosine ranking describe the same content (and a
-   * `private` field can never be in that set — vectorizeFields throws on one).
-   *
-   * The caller sets this ONLY when an anchor supplies the query vector. With no
-   * anchor the text IS the query vector, and literal-gating it would delete
-   * semantic recall — cosine could then only reorder rows that already contain
-   * the typed string. See the call site in search_route.ts.
+   * Value-match WHERE predicate over the `vectorize: true` fields, so text
+   * narrows while an anchor's embedding still ranks. Set only when an anchor
+   * supplies the query vector: without one the text is the query vector, and
+   * literal-gating it would remove semantic recall. A `private` field is never
+   * in the field set (vectorizeFields throws on one).
    */
   textSearch?: string;
   /** The `vectorize: true` field names, from registry.vectorizeFields(). */
@@ -79,54 +67,33 @@ function filterFragment(sql: Sql, f: FilterClause): PendingQuery<Row[]> {
     case 'lte': return sql`(i.item_state->>${key})::numeric <= ${Number(f.value)}`;
     case 'contains': {
       const arr = Array.isArray(f.value) ? f.value : [f.value];
-      // Bind the value as real jsonb via postgres.js's sql.json(). A plain
-      // `${JSON.stringify(arr)}::jsonb` is sent as a text param and the cast
-      // re-parses it into a jsonb *string scalar* (double-encoded), so
-      // `array @> "..."` is always false — array-field filtering silently
-      // returned nothing. sql.json() sends a proper jsonb array.
+      // Must bind via sql.json(). A `${JSON.stringify(arr)}::jsonb` cast is sent
+      // as text and re-parsed into a jsonb string scalar, so `@>` never matches.
       return sql`(i.item_state->${key}) @> ${sql.json(arr as unknown as Parameters<typeof sql.json>[0])}`;
     }
     case 'contains_any': {
-      // jsonb `?|`: true when the array-valued field shares AT LEAST ONE
-      // element with the given list ("contains any of"). Complements `contains`
-      // (`@>` = must contain ALL). Values bound as a text[] parameter (never
-      // interpolated); `?|` is a literal operator, not a placeholder, in
-      // postgres.js. A single non-array value is wrapped, mirroring `contains`.
+      // jsonb `?|`: the array field shares at least one value with the list.
+      // Values are bound as a text[] parameter; postgres.js treats `?|` as a
+      // literal operator, not a placeholder.
       const arr = (Array.isArray(f.value) ? f.value : [f.value]).map(String);
       return sql`(i.item_state->${key}) ?| ${arr}::text[]`;
     }
   }
 }
 
-/**
- * The #148 narrowing predicate: every whitespace-separated TERM must appear in
- * SOME vectorized field. So it is an AND across terms, each an OR across
- * fields, ANDed as a whole into the WHERE.
- *
- * Tokenized rather than matched as one contiguous `%q%` string. The whole-query
- * form looks equivalent for one word and falls off a cliff for two: with
- * `service_details: 'solar installation'` and `services_offered: ['Solar',
- * 'Training']`, the query `'solar training'` matched NOTHING, because no single
- * field holds that contiguous string. Any realistic multi-word search returned
- * an empty list.
- *
- * Runs against i.item_state — item_search stores no serialized text, and the
- * `JOIN items i` is already present. Field names and terms are BOUND as
- * parameters, never interpolated, matching filterFragment.
- *
- * Known looseness (contract §4, accepted): for an array-valued field,
- * `->>'f'` yields the serialized JSON array as text (e.g. ["solar","wind"]),
- * so ILIKE matches that text form.
- */
-// ILIKE metacharacters, escaped so a typed `%` or `_` matches itself. The term
-// is always bound as a parameter, so this was never an injection risk — but
-// unescaped, searching "50%" barely narrowed anything and a lone "_" matched
-// every row. Backslash is ILIKE's default escape character, so escaping it too
-// keeps a literal backslash literal.
+// Escapes ILIKE metacharacters so a typed `%`, `_` or `\` matches itself
+// (backslash is ILIKE's default escape character).
 function escapeLikePattern(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
+/**
+ * Text narrowing predicate: every whitespace-separated term must appear in some
+ * vectorized field (AND across terms, OR across fields). Tokenized because one
+ * contiguous `%q%` misses multi-word queries whose words sit in different
+ * fields. Field names and terms are bound as parameters. For an array-valued
+ * field, `->>` yields the serialized JSON array, so ILIKE matches that text.
+ */
 function textFragment(sql: Sql, q: string, fields: string[]): PendingQuery<Row[]> | undefined {
   if (fields.length === 0) return undefined;
   const terms = q.split(/\s+/).filter((t) => t.length > 0);
@@ -141,10 +108,8 @@ function textFragment(sql: Sql, q: string, fields: string[]): PendingQuery<Row[]
   return wrapped.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc} AND ${frag}`), wrapped[0]);
 }
 
-// Every WHERE predicate, ANDed together. The spatial clause — a point radius
-// or a bbox — is the only thing that filters on location; an ordering centre
-// never appears here, which is what lets `sort: 'nearest'` order the full
-// candidate set (#644).
+// Only the spatial clause (radius or bbox) filters on location; an ordering
+// centre never appears here.
 function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
   const conds: PendingQuery<Row[]>[] = [
     sql`i.lifecycle_status = 'live'`,
@@ -166,42 +131,15 @@ function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
     // ST_MakeEnvelope takes (xmin, ymin, xmax, ymax) = (minLng, minLat, maxLng, maxLat).
     const envelope = sql`ST_MakeEnvelope(${p.bbox.minLng}, ${p.bbox.minLat}, ${p.bbox.maxLng}, ${p.bbox.maxLat}, 4326)`;
 
-    // The EXACT test, and it is planar on purpose. A map viewport IS a lat/lng
-    // rectangle, but a geography polygon's edges are geodesics: the arc joining
-    // two corners at the same latitude bows toward the pole, so the shape is
-    // shifted north of the rectangle the user actually saw. Measured on a
-    // 0.1° x 0.2° box at 12.9°N, a pin sitting exactly on the southern edge
-    // fell ~2 m OUTSIDE the geography polygon and was dropped, while a pin just
-    // north of the top edge was wrongly included. Small, but it is the same
-    // class of error — a list disagreeing with the map — that made the
-    // circumscribed-circle approximation unacceptable (spec D6). Planar is
-    // correct at ANY box size. Boundary-inclusive.
+    // Design: docs/architecture/bbox-filter.md
+    // The exact test is planar because a map viewport is a lat/lng rectangle;
+    // geodesic polygon edges bow toward the pole. Boundary-inclusive.
     const exact = sql`ST_Intersects(s.geo::geometry, ${envelope})`;
 
-    // The geography `&&` PREFILTER is what keeps the existing
-    // item_search_geo_gist index in play — the same access path ST_DWithin
-    // takes; the geometry cast above alone defeats it. Measured on 20 000 geo
-    // rows: with the prefilter, Index Scan using item_search_geo_gist at
-    // 0.261 ms; the exact test alone, double Seq Scan at 240.8 ms; the existing
-    // ST_DWithin, Bitmap Index Scan at 38.6 ms.
-    //
-    // But it is only VALID for a box smaller than a hemisphere in each
-    // direction, because a geography polygon's edges follow the SHORTER
-    // great-circle arc. Past that the envelope is read as going the other way
-    // round the globe and becomes its own complement, so the prefilter — which
-    // is supposed to strictly CONTAIN the planar rectangle — excludes
-    // everything instead. Measured: a longitude span of 180° still matches,
-    // 180.002° and wider silently matches nothing. Worse, an envelope edge
-    // whose endpoints are exactly antipodal makes the geography cast THROW
-    // `Antipodal (180 degrees long) edge detected!`, which is a 500 rather than
-    // an empty page — that happens for a pole-to-pole latitude span (exactly
-    // 180°) and for a 180° longitude span with an edge lying on the equator.
-    //
-    // So the prefilter is applied only when BOTH spans are strictly under 180°,
-    // which excludes every case above at once and leaves realistic viewports
-    // untouched. A box that wide selects almost everything anyway, so losing
-    // index acceleration there costs nothing; returning the wrong rows, or
-    // erroring, is not an option.
+    // The geography `&&` prefilter keeps item_search_geo_gist in use (the
+    // geometry cast alone defeats it). It is only valid when both spans are
+    // under 180°: wider envelopes invert and match nothing, and antipodal edges
+    // make the geography cast throw.
     const withinGeodeticLimits =
       p.bbox.maxLng - p.bbox.minLng < 180 && p.bbox.maxLat - p.bbox.minLat < 180;
 
@@ -212,7 +150,6 @@ function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
     );
   }
 
-  // postgres.js supports nesting PendingQuery fragments inside template literals.
   return conds.reduce<PendingQuery<Row[]>>(
     (acc, c, i) => (i === 0 ? c : sql`${acc} AND ${c}`),
     conds[0],
@@ -220,11 +157,8 @@ function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
 }
 
 /**
- * The centre used to MEASURE and ORDER by distance. The ORDERING centre wins
- * over the FILTER centre, per contract §1.3: `nearest` may be requested with no
- * spatial filter at all. When only a spatial clause is present its own centre
- * is used, so an area-filtered search keeps emitting distanceMeters exactly as
- * before.
+ * Centre used to measure and order by distance. The ordering centre wins over
+ * the radius filter's centre; with neither, no distance is computed.
  */
 function distanceCenter(p: SearchParams): { lat: number; lng: number } | undefined {
   if (p.orderingCenter) return p.orderingCenter;
@@ -233,46 +167,11 @@ function distanceCenter(p: SearchParams): { lat: number; lng: number } | undefin
 }
 
 /**
- * ORDER BY for one search. Pure fragment builder: prefer cosine when a vector
- * is present, else distance, else recency.
+ * ORDER BY for one search. Every path except cosine ends in an `item_id`
+ * tiebreaker so tied rows page deterministically. Cosine has none because a
+ * second sort key makes the HNSW index unusable.
  *
- * Why the tiebreaker exists (spec §3.4): SQL leaves tied rows unordered, and
- * each page is an independent query execution whose LIMIT+OFFSET bound differs,
- * so the planner can arrange a tie group differently between page N and page
- * N+1 — rows appear twice while others are never returned. Measured on 200 rows
- * sharing one created_at and one indexed_at: paging at limit 20 returned 197
- * distinct ids out of 200. item_id is unique per row, already in the composite
- * PK and already selected, and a sort comparator only reads it INSIDE a tie
- * group, so distinct leading keys never pay for it.
- *
- * ...EXCEPT on the cosine path, which deliberately has NO tiebreaker.
- * Appending a second sort key makes pgvector's HNSW index unusable: the scan
- * supplies a pathkey only for the exact single-expression ordering, and being
- * approximate it cannot promise it emits complete tie groups, so Postgres
- * cannot build an incremental sort over it either. Measured on 20k rows, adding
- * `, s.item_id ASC` here replaced
- *   Index Scan using item_search_embedding_hnsw   (2.8 ms)
- * with a full Seq Scan + top-N heapsort of every live row (316 ms) — 115x
- * slower and O(corpus). Forcing seqscan/hashjoin/mergejoin off does not recover
- * an HNSW plan; none exists.
- *
- * The cost would also buy almost nothing. A cosine tie needs byte-identical
- * embeddings, and the HNSW traversal is deterministic for a fixed query vector,
- * ef_search and index state — so even tied rows already come back in a stable
- * order. Measured: five pages at limit 20 (offsets 0/20/40/100/200) with
- * hnsw.ef_search=500 returned 100 distinct ids and zero overlap between any
- * pair of pages, and a given page was byte-identical across repeat calls in one
- * session and on a fresh connection.
- *
- * Distance and recency pay nothing for the tiebreaker: the geo path keeps the
- * same Bitmap Index Scan on item_search_geo_gist with a byte-identical plan,
- * and recency sorts either way.
- *
- * Separate, unrelated limitation worth knowing when reading relevance results:
- * pgvector's hnsw.ef_search defaults to 40 with hnsw.iterative_scan off, and in
- * that configuration the scan silently truncates. See src/db/client.ts, which
- * sets iterative_scan on every API connection; it is not something this ORDER
- * BY can address.
+ * Design: docs/architecture/search-ordering-and-paging.md
  */
 function buildOrderBy(
   sql: Sql,
@@ -284,14 +183,13 @@ function buildOrderBy(
   const tiebreak = sql`s.item_id ASC`;
   const byDistance = sql`${distExpr} ASC NULLS LAST, ${tiebreak}`;
   const byCosine = () => sql`s.embedding <=> ${vecLiteral}::vector ASC`;
-  // Recency means i.created_at, NOT item_search.indexed_at (spec D5 / P4): a
-  // re-index or a backfill must not reshuffle the user-facing feed. The
-  // INFERRED path is the one exception — it keeps indexed_at, because that is
-  // what it has always done and an absent `sort` must not change.
+  // Recency is i.created_at, not indexed_at, so a re-index or backfill does not
+  // reshuffle the feed. The inferred (no-sort) path keeps indexed_at so its
+  // behaviour does not change.
   const byRecency = sql`i.created_at DESC, ${tiebreak}`;
 
   if (p.sort === undefined) {
-    // No sort requested: today's inferred ordering, preserved exactly.
+    // No sort requested: the inferred ordering.
     if (vecLiteral) return byCosine();
     if (p.spatial) return byDistance;
     return sql`s.indexed_at DESC, ${tiebreak}`;
@@ -299,13 +197,11 @@ function buildOrderBy(
 
   switch (p.sort) {
     case 'relevance':
-      // Degrades to recency when no vector was supplied. resolveSort should
-      // already have prevented that, so this is defence in depth, not a second
-      // decision point.
+      // Defence in depth: resolveSort already degrades vectorless relevance.
       return vecLiteral ? byCosine() : byRecency;
     case 'nearest':
-      // No ST_DWithin is added by this sort — ordering by location must never
-      // truncate the candidate set (#644). Location-less rows sort last.
+      // Ordering adds no ST_DWithin, so the candidate set is never truncated.
+      // Location-less rows sort last.
       return hasDistCenter ? byDistance : byRecency;
     case 'newest':
       return byRecency;
@@ -317,13 +213,10 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
 
   const where = buildWhere(sql, p);
 
-  // Score expression: (1 - cosine_distance) cast to float8; NULL when no vector
   const scoreSel = vecLiteral
     ? sql`(1 - (s.embedding <=> ${vecLiteral}::vector))::float8`
     : sql`NULL::float8`;
 
-  // Distance expression reused in both SELECT and ORDER BY to avoid alias reference issues
-  // (a bare column alias cannot appear in the same SELECT's ORDER BY in Postgres subquery context).
   const distCenter = distanceCenter(p);
   const distExpr = distCenter
     ? sql`ST_Distance(
@@ -362,9 +255,7 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
     item_locations: r.item_locations as { lat: number; lng: number; label?: string }[],
     item_instance_url: r.item_instance_url,
     item_schema_url: r.item_schema_url,
-    // postgres.js returns timestamptz as Date; serialize to ISO strings so the
-    // JSON response (and ItemResultSchema, which declares these as z.string())
-    // carries a stable, timezone-unambiguous representation.
+    // postgres.js returns Date; ItemResultSchema declares these as ISO strings.
     created_at: r.created_at.toISOString(),
     updated_at: r.updated_at.toISOString(),
     created_by: r.created_by,
