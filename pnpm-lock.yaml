@@ -53,7 +53,7 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
       vite:
-        specifier: ^8.3.5
+        specifier: ^8
         version: 8.3.5(@types/node@24.19.1)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)
       vitest:
         specifier: ^4.1.11
