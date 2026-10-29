@@ -7,9 +7,11 @@ on:
   # `feature` still run CI against the merge commit, so the integration branch
   # keeps its gate; what is gone is the duplicate post-merge run.
   push:
-    branches: [main, develop]
+    # release/**: hotfix tags are CI-gated on the release branch commit, and hotfix PRs target it.
+    branches: [main, develop, 'release/**']
   pull_request:
-    branches: [main, develop, feature]
+    # release/**: hotfix tags are CI-gated on the release branch commit, and hotfix PRs target it.
+    branches: [main, develop, feature, 'release/**']
 
 # Least privilege by default: every job here only reads the repo. Jobs that need
 # more declare it themselves (zizmor excessive-permissions,
