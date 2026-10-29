@@ -20,7 +20,7 @@
   "dependencies": {
     "@fastify/swagger": "^9",
     "@scalar/fastify-api-reference": "^1.72.1",
-    "fastify": "^5.12.5",
+    "fastify": "^5.12.6",
     "fastify-type-provider-zod": "^7.0.0",
     "ioredis": "^6.0.0",
     "postgres": "^3.4.5",
@@ -38,8 +38,9 @@
   },
   "pnpm": {
     "overrides": {
-      "fast-uri@>=3.0.0 <3.1.8": "3.1.8",
-      "fast-uri@>=4.0.0 <4.1.5": "4.1.5"
+      "fast-uri@>=3.0.0 <3.1.9": "3.1.9",
+      "fast-uri@>=4.0.0 <4.2.3": "4.2.3",
+      "source-map-js@<1.2.2": "1.2.2"
     },
     "onlyBuiltDependencies": []
   }
