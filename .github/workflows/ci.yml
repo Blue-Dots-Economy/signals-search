@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
+          package-manager-cache: false
 
       # --ignore-scripts: no dependency lifecycle script is needed to build or
       # test this service. pnpm 10 already blocks them by default (cpu-features,
