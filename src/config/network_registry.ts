@@ -11,10 +11,8 @@ export type NetworkRegistry = {
   itemSchema(network: string, domain: string, type: string): ItemSchema | undefined;
   vectorizeFields(network: string, domain: string, type: string): VectorizeField[];
   isInteractionAllowed(network: string, fromDomain: string, toDomain: string): boolean;
-  // Cross-network variant: matches an interaction (defined in the SOURCE
-  // network's actions) whose from/to network AND domain all match. The
-  // same-network case is just fromNetwork === toNetwork. Used by /v1/relevance,
-  // which — unlike anchor search — may compare items in two different networks.
+  // Cross-network variant for /v1/relevance: matches an interaction in the
+  // source network's actions whose from/to network and domain all match.
   isInteractionAllowedAcross(
     fromNetwork: string,
     fromDomain: string,

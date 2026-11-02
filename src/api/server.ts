@@ -18,11 +18,7 @@ import type { NetworkRegistry } from '../config/network_registry.js';
 import { registerSearchRoute } from './search_route.js';
 import { registerRelevanceRoute } from './relevance_route.js';
 
-/**
- * Runs a dependency check with a hard timeout, collapsing any failure (rejection
- * or timeout) to `'error'`. Used by the readiness probe so a hung Postgres/Redis
- * connection can never make the probe itself hang.
- */
+/** Runs a dependency check with a hard timeout so a hung connection cannot hang /ready. */
 async function probe(fn: () => Promise<unknown>, ms = 2000): Promise<'ok' | 'error'> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -61,12 +57,10 @@ export function buildServer(opts: {
 }): FastifyInstance {
   const apiReference = opts.apiReference ?? { enabled: true };
   const app = Fastify({
-    // Redact credential headers so a raw API key can never reach the logs,
-    // even if a custom/error serializer ever emits request headers.
+    // Never log a raw API key or bearer token.
     logger: { redact: ['req.headers["x-api-key"]', 'req.headers.authorization'] },
-    // Correlation id: always run genReqId (requestIdHeader:false) so we can
-    // read AND length-cap an inbound `x-request-id` (from Kong or an upstream
-    // caller), falling back to a generated id. Logged as `reqId`.
+    // requestIdHeader:false so genReqId always runs and can length-cap an
+    // inbound `x-request-id`.
     requestIdHeader: false,
     requestIdLogLabel: 'reqId',
     genReqId: (req) => {
@@ -80,14 +74,11 @@ export function buildServer(opts: {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  // Echo the resolved correlation id back so callers/Kong can stitch the trace.
   app.addHook('onRequest', async (req, reply) => {
     void reply.header('x-request-id', req.id);
   });
 
-  // Route schemas are now Zod (so they self-document via @fastify/swagger). Map the
-  // type provider's request-validation failures back to the service's stable 400
-  // contract; everything else falls through to default handling (e.g. 500).
+  // Maps Zod request-validation failures to the stable 400 VALIDATION_ERROR contract.
   app.setErrorHandler((err, _req, reply) => {
     if (hasZodFastifySchemaValidationErrors(err)) {
       return reply.code(400).send({ error: 'VALIDATION_ERROR', message: err.message });
@@ -95,10 +86,8 @@ export function buildServer(opts: {
     return reply.send(err);
   });
 
-  // OpenAPI generation from the route Zod schemas (must be registered before the
-  // routes so its onRoute hook captures them — hence routes live in the deferred
-  // plugin below). Docs surface is env-gated and secure-by-default; the
-  // always-available reference is the bluedots-docs site.
+  // Swagger must register before the routes so its onRoute hook captures them.
+  // The docs surface is env-gated; bluedots-docs is the always-available reference.
   if (apiReference.enabled) {
     app.register(fastifySwagger, {
       openapi: {
@@ -109,9 +98,7 @@ export function buildServer(opts: {
             'V1 search & discovery for Signals-DPG (pgvector + PostGIS). Meaning + geo + ' +
             'structured search over the shared Signals database. Auth: x-api-key header.',
         },
-        // The services are self-hosted per network instance, so the "public"
-        // URL is deployment-specific; the localhost entry covers the local
-        // stack (only added when the primary entry isn't already localhost).
+        // The public URL is deployment-specific; localhost is added for local dev.
         ...(apiReference.publicBaseUrl
           ? {
               servers: [
@@ -138,12 +125,8 @@ export function buildServer(opts: {
       },
       transform: jsonSchemaTransform,
     });
-    // @scalar/fastify-api-reference always registers the bare route prefix
-    // (/api/reference) as an unconditional 301 to the trailing-slash form —
-    // fine for browsers, but it means the canonical URL never itself 200s.
-    // onRoute fires synchronously as each route is declared, so this rewrites
-    // that one handler (in place, no duplicate route) to serve the real page
-    // instead of redirecting to it.
+    // Scalar registers /api/reference as a 301 to /api/reference/. This rewrites
+    // that handler in place so the bare URL serves the page with a 200.
     app.addHook('onRoute', (routeOptions) => {
       if (routeOptions.method === 'GET' && routeOptions.url === '/api/reference') {
         routeOptions.handler = async (req, reply) => {
@@ -156,8 +139,7 @@ export function buildServer(opts: {
     app.register(scalarApiReference, { routePrefix: '/api/reference' });
   }
 
-  // Routes in a deferred plugin so they register AFTER the swagger plugin's onRoute
-  // hook is in place (otherwise they wouldn't appear in the generated spec).
+  // Deferred so routes register after swagger's onRoute hook and appear in the spec.
   app.register(async (instance) => {
     instance.withTypeProvider<ZodTypeProvider>().get(
       '/health',

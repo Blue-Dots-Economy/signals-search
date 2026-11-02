@@ -1,6 +1,5 @@
 import type { Sql } from 'postgres';
 
-/** A fully-qualified item_search row reference (the composite primary key). */
 export type RelevanceItemRef = {
   item_network: string;
   item_domain: string;
@@ -9,15 +8,9 @@ export type RelevanceItemRef = {
 };
 
 /**
- * Outcome of a pairwise relevance computation:
- *  - `ok`             both items are live and indexed with embeddings from the
- *                     SAME model version → `similarity` is their cosine
- *                     similarity in [-1, 1].
- *  - `not_found`      at least one item is absent, not `live`, or has a NULL
- *                     embedding (nothing to compare).
- *  - `not_comparable` both items are live + embedded but from DIFFERENT model
- *                     versions, so their vectors live in different spaces and
- *                     cosine is meaningless (e.g. mid re-embed / model migration).
+ * `ok.similarity` is cosine similarity in [-1, 1]. `not_found`: an item is
+ * absent, not live, or has a NULL embedding. `not_comparable`: the two
+ * `model_version`s differ, so cosine between them is meaningless.
  */
 export type RelevanceOutcome =
   | { status: 'ok'; similarity: number }
@@ -25,18 +18,9 @@ export type RelevanceOutcome =
   | { status: 'not_comparable' };
 
 /**
- * Cosine similarity between two already-indexed items' stored embeddings.
- *
- * Same score definition as search ranking — `1 - (embedding <=> embedding)`
- * (1 minus pgvector cosine distance) — but computed between two specific rows
- * instead of a query vector and the corpus. Both embeddings are read straight
- * from `item_search`, so there is no embedding call and no write (mirrors the
- * "vectorize at write, rank at read" principle).
- *
- * Scoped to `lifecycle_status = 'live'` on both sides (parity with /v1/search,
- * so non-live draft/paused/archived rows are never revealed). Guards on
- * `model_version`: vectors from different embedding models are reported as
- * `not_comparable` rather than silently producing a meaningless number.
+ * Cosine similarity between two indexed items' stored embeddings, with the same
+ * score definition as search ranking. No embedding call and no write. Live rows
+ * only on both sides, so non-live items are never revealed.
  */
 export async function computeRelevance(
   sql: Sql,

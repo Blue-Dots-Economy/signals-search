@@ -16,9 +16,8 @@ async function main() {
     apiReference: cfg.apiReference,
   });
 
-  // Graceful shutdown: drain the HTTP server, then close the Redis and Postgres
-  // connections that were previously leaked on SIGTERM. Re-entrancy guarded so
-  // a double signal can't double-close.
+  // Graceful shutdown: drain HTTP, then close Redis and Postgres. Guarded so a
+  // second signal cannot double-close.
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;

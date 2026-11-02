@@ -1,10 +1,7 @@
 import { z } from 'zod';
 
-// z.coerce.boolean() coerces via Boolean(), so EVERY non-empty string — including
-// the literal "false" — becomes true. That silently defeats env flags like
-// RUN_MIGRATIONS="false". Parse env booleans by value instead: accept real
-// booleans plus the canonical string forms, and reject anything else (fail fast
-// rather than guess). Undefined falls back to the supplied default.
+// Not z.coerce.boolean(): Boolean("false") is true. Only booleans and
+// 'true'/'false'/'1'/'0' are accepted; anything else fails validation.
 const envBool = (defaultValue: boolean) =>
   z
     .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
@@ -18,39 +15,32 @@ const EnvSchema = z.object({
   EMBEDDING_MODEL: z.string().min(1),
   EMBEDDING_DIM: z.coerce.number().int().positive().max(2000), // pgvector HNSW limit
   EMBEDDING_API_KEY: z.string().optional(),
-  // Serving-stack tag appended to model_version (e.g. 'tei-1.9'). UNSET BY DESIGN:
-  // model_version is part of the ingest content hash, so any change to it makes the
-  // sweep re-embed the whole corpus. Set this only as part of a deliberate TEI
-  // upgrade, where that re-index is the point (#102).
+  // Serving-stack tag appended to model_version (e.g. 'tei-1.9'). Leave unset:
+  // model_version feeds the content hash, so changing it re-embeds the whole
+  // corpus. Set it only as part of a deliberate TEI upgrade.
   EMBEDDING_SERVING_VERSION: z.string().optional(),
   INGEST_STREAM: z.string().default('signals:item-events'),
   INGEST_CONSUMER_GROUP: z.string().default('signals-search'),
   INGEST_CONSUMER_NAME: z.string().default('worker-1'),
-  // Dead-letter stream for poison messages (schema-invalid events, and events
-  // that fail processing more than INGEST_MAX_DELIVERIES times). Defaults to
-  // `${INGEST_STREAM}:dlq`. Parked entries are acked on the main group so they
-  // stop redelivering; nothing consumes the DLQ automatically (operator triage).
+  // Dead-letter stream for schema-invalid events and events that reach
+  // INGEST_MAX_DELIVERIES. Nothing consumes it automatically (operator triage).
   INGEST_DLQ_STREAM: z.string().optional(),
   INGEST_MAX_DELIVERIES: z.coerce.number().int().positive().default(5),
-  // Cap on the DLQ stream length (approximate, `MAXLEN ~`) so poison storms
-  // cannot grow the shared Redis unbounded.
+  // Approximate (`MAXLEN ~`) cap so poison storms cannot grow the shared Redis unbounded.
   INGEST_DLQ_MAXLEN: z.coerce.number().int().positive().default(10_000),
-  // Must be > 0 (and in practice >> one processing cycle): XAUTOCLAIM reclaims
-  // from cursor '0-0' each loop, so a near-zero idle would let a worker re-claim
-  // its own just-claimed-but-unacked messages and starve fresh reads.
+  // Must be well above one processing cycle: XAUTOCLAIM scans from '0-0' each
+  // loop, so a near-zero idle re-claims the worker's own unacked messages and
+  // starves fresh reads.
   PEL_MIN_IDLE_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SWEEP_BATCH_SIZE: z.coerce.number().int().positive().default(200),
   API_PORT: z.coerce.number().int().positive().default(3100),
-  // Port for the worker's lightweight health/readiness HTTP surface. The worker
-  // is a background consumer with no API, but k8s still needs to probe it —
-  // without this a wedged sweep/ingest loop looks healthy forever.
+  // Port for the worker's health/readiness server (the worker has no API).
   WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3101),
-  // Worker readiness flips to 503 if the ingest loop hasn't made progress within
-  // this window. Must exceed one XREADGROUP block (5s) with headroom so an idle
-  // (message-less) loop still counts as healthy; a true wedge exceeds it.
+  // Worker /ready returns 503 after this long without loop progress. Must exceed
+  // one XREADGROUP block (5s) with headroom so an idle loop stays healthy.
   WORKER_HEARTBEAT_STALE_MS: z.coerce.number().int().positive().default(30_000),
-  // Default radius (meters) for a spatial clause that omits distanceMeters.
+  // Default radius in metres for an s_dwithin clause without distanceMeters.
   SEARCH_DEFAULT_DISTANCE_METERS: z.coerce.number().positive().default(30_000),
   NETWORK_CONFIG_PATH: z.string().min(1),
   RERANK_BASE_URL: z.string().url().optional(),

@@ -30,12 +30,9 @@ export async function assertSchemaReady(databaseUrl: string): Promise<void> {
       );
     }
 
-    // Column-level check, not just the table (#122). Signals-DPG owns this DDL, so
-    // this process can start against a database migrated before
-    // `source_updated_at` existed — and BOTH the sweep predicate and every upsert
-    // reference that column. Booting anyway is the worst outcome: readiness stays
-    // green while each sweep tick throws and each ingest message retries to the
-    // DLQ. Fail fast, naming the migration that fixes it.
+    // Signals-DPG owns this DDL, so the database may predate `source_updated_at`.
+    // The sweep and every upsert need it; booting without it would stay ready
+    // while every sweep throws and every message retries to the DLQ.
     const [{ hasColumn }] = await sql<{ hasColumn: boolean }[]>`
       SELECT EXISTS (
         SELECT 1 FROM information_schema.columns

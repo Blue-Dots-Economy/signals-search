@@ -13,12 +13,11 @@ export async function runSweep(args: {
   batchSize: number;
 }): Promise<number> {
   const { sql, repo, embedder, fieldsFor, modelVersion, batchSize } = args;
-  // Staleness compares the source row's version against the version we last
-  // indexed — NOT against when we wrote it (#122). `indexed_at` is stamped after
-  // the embed round trip, so an update committed inside that window carries an
-  // earlier timestamp than the stale write it should have invalidated and would
-  // never be re-selected. COALESCE keeps rows indexed before `source_updated_at`
-  // existed behaving as they did.
+  // Staleness compares against the source version last indexed, not the write
+  // time: `indexed_at` is stamped after the embed, so an update committed during
+  // it would never be re-selected. The COALESCE covers rows whose
+  // `source_updated_at` is NULL.
+  // updated_at_epoch is text so microseconds survive the JS round trip.
   const rows = await sql<SourceItem[]>`
     SELECT i.item_network, i.item_domain, i.item_type, i.item_id,
            i.item_state, i.item_locations, i.lifecycle_status,
@@ -31,10 +30,8 @@ export async function runSweep(args: {
 
   let count = 0;
   for (const item of rows) {
-    // Per-item isolation: one item that throws (bad data, transient embed error)
-    // must not abort the batch. Without this, `ORDER BY updated_at ASC` re-selects
-    // the same failing item as the head of every future sweep and permanently
-    // blocks every item behind it.
+    // Per-item isolation: with oldest-first ordering, a failing item that aborted
+    // the batch would head every future sweep and block everything behind it.
     try {
       const fields = fieldsFor(item.item_network, item.item_domain, item.item_type);
       await indexItem({ item, fields, embedder, repo, modelVersion });
@@ -49,8 +46,7 @@ export async function runSweep(args: {
   return count;
 }
 
-/** Remove item_search rows whose items row no longer exists (missed deletes,
- *  no FK/ON DELETE). Returns the number of rows deleted. */
+/** Deletes item_search rows whose items row is gone (there is no FK), returning the count. */
 export async function sweepOrphans(sql: Sql): Promise<number> {
   const res = await sql`
     DELETE FROM item_search s

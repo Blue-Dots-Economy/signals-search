@@ -7,9 +7,11 @@ on:
   # `feature` still run CI against the merge commit, so the integration branch
   # keeps its gate; what is gone is the duplicate post-merge run.
   push:
-    branches: [main, develop]
+    # release/**: hotfix tags are CI-gated on the release branch commit, and hotfix PRs target it.
+    branches: [main, develop, 'release/**']
   pull_request:
-    branches: [main, develop, feature]
+    # release/**: hotfix tags are CI-gated on the release branch commit, and hotfix PRs target it.
+    branches: [main, develop, feature, 'release/**']
 
 # Least privilege by default: every job here only reads the repo. Jobs that need
 # more declare it themselves (zizmor excessive-permissions,
@@ -40,10 +42,10 @@ jobs:
         with:
           version: 10.0.0
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
+          package-manager-cache: false
 
       # --ignore-scripts: no dependency lifecycle script is needed to build or
       # test this service. pnpm 10 already blocks them by default (cpu-features,
