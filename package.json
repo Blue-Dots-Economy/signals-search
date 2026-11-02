@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@fastify/swagger": "^9",
-    "@scalar/fastify-api-reference": "^1.72.1",
+    "@scalar/fastify-api-reference": "^1.76.0",
     "fastify": "^5.12.6",
     "fastify-type-provider-zod": "^7.0.0",
     "ioredis": "^6.0.0",
