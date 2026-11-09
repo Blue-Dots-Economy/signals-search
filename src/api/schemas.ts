@@ -9,10 +9,24 @@ export const ContextSchema = z.object({
   itemType: z.string().min(1),
 });
 
+export const PlacePrecisionSchema = z.enum(['postal_code', 'locality', 'city', 'district']);
+export type PlacePrecision = z.infer<typeof PlacePrecisionSchema>;
+
+// The point a text address resolved to, echoed so a caller can show what was searched.
+export const ResolvedLocationSchema = z.object({
+  input: z.string(),
+  label: z.string(),
+  point: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }),
+  precision: PlacePrecisionSchema,
+  radiusMeters: z.number(),
+});
+
 const DwithinClauseSchema = z.object({
   op: z.literal('s_dwithin'),
-  // When omitted, the centre is the anchor item's stored location.
+  // When neither geometry nor address is given, the centre is the anchor item's stored location.
   geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }).optional(),
+  // A text place name resolved to a centre; mutually exclusive with geometry and the anchor.
+  address: z.string().trim().min(1).max(200).optional(),
   // Defaults to SEARCH_DEFAULT_DISTANCE_METERS.
   distanceMeters: z.number().positive().optional(),
 });
@@ -73,15 +87,27 @@ export const IntentSchema = z.object({
   sort: SortModeSchema.optional(),
   orderingCenter: OrderingCenterSchema.optional(),
 }).superRefine((intent, ctx) => {
-  // An s_dwithin clause without geometry takes its centre from the anchor, so it
-  // requires item.id. A bbox carries its own bounds.
-  const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => s.op === 's_dwithin' && !s.geometry);
+  // An s_dwithin clause with neither geometry nor address takes its centre from
+  // the anchor, so it requires item.id. A bbox carries its own bounds.
+  const hasAnchorlessSpatial = (intent.spatial ?? []).some(
+    (s) => s.op === 's_dwithin' && !s.geometry && !s.address,
+  );
   if (hasAnchorlessSpatial && !intent.item?.id) {
     ctx.addIssue({
       code: 'custom',
       message: 'a spatial clause without geometry requires intent.item.id (the location is taken from the anchor item)',
       path: ['spatial'],
     });
+  }
+
+  for (const s of intent.spatial ?? []) {
+    if (s.op !== 's_dwithin' || !s.address) continue;
+    if (s.geometry) {
+      ctx.addIssue({ code: 'custom', message: 'address and geometry are mutually exclusive', path: ['spatial'] });
+    }
+    if (intent.item?.id) {
+      ctx.addIssue({ code: 'custom', message: 'address cannot be combined with intent.item.id', path: ['spatial'] });
+    }
   }
 
   // Misordered bounds are rejected, not swapped: swapping would search an area
@@ -149,6 +175,8 @@ export const SearchResponseSchema = z.object({
       // The order actually applied, after any degradation or inference.
       sort_applied: SortModeSchema,
     }),
+    // Present only when the request carried a spatial address.
+    resolvedLocation: ResolvedLocationSchema.optional(),
   }),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;

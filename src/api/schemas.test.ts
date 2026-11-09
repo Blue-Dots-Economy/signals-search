@@ -169,3 +169,59 @@ describe('IntentSchema — bbox spatial clause (#644 "search this area")', () =>
     expect(parse({ spatial: [RADIUS] }).success).toBe(true);
   });
 });
+
+describe('IntentSchema — s_dwithin address clause', () => {
+  const ctx = { version: '1.0.0', messageId: 'm1', networkId: 'n', domain: 'd', itemType: 't' };
+  const parse = (intent: unknown) =>
+    SearchRequestSchema.safeParse({ context: ctx, message: { intent, pagination: { limit: 20, offset: 0 } } });
+  const messages = (r: ReturnType<typeof parse>) => (r.success ? [] : r.error.issues.map((i) => i.message));
+  const POINT = { type: 'Point', coordinates: [77.59, 12.97] };
+
+  it('accepts an address clause with no anchor', () => {
+    expect(parse({ spatial: [{ op: 's_dwithin', address: 'Dharwad' }] }).success).toBe(true);
+  });
+  it('accepts an address clause with distanceMeters', () => {
+    expect(parse({ spatial: [{ op: 's_dwithin', address: 'Dharwad', distanceMeters: 5000 }] }).success).toBe(true);
+  });
+  it('rejects a blank address', () => {
+    expect(parse({ spatial: [{ op: 's_dwithin', address: '  ' }] }).success).toBe(false);
+  });
+  it('rejects an address longer than 200 characters', () => {
+    expect(parse({ spatial: [{ op: 's_dwithin', address: 'a'.repeat(201) }] }).success).toBe(false);
+  });
+  it('rejects address together with geometry', () => {
+    const r = parse({ spatial: [{ op: 's_dwithin', address: 'Dharwad', geometry: POINT }] });
+    expect(r.success).toBe(false);
+    expect(messages(r)).toContain('address and geometry are mutually exclusive');
+  });
+  it('rejects address together with intent.item.id', () => {
+    const r = parse({ item: { id: '11111111-1111-1111-1111-111111111111' }, spatial: [{ op: 's_dwithin', address: 'Dharwad' }] });
+    expect(r.success).toBe(false);
+    expect(messages(r)).toContain('address cannot be combined with intent.item.id');
+  });
+  it('still requires item.id for a clause with neither geometry nor address', () => {
+    const r = parse({ spatial: [{ op: 's_dwithin', distanceMeters: 5000 }] });
+    expect(r.success).toBe(false);
+    expect(messages(r).join(' ')).toContain('requires intent.item.id');
+  });
+});
+
+describe('SearchResponseSchema — resolvedLocation', () => {
+  const ctx = { version: '1.0.0', messageId: 'm1', networkId: 'n', domain: 'd', itemType: 't' };
+  const meta = { total: 0, limit: 20, offset: 0, sort_applied: 'newest' };
+  const resolvedLocation = {
+    input: 'Dharwad', label: 'Dharwad, Karnataka',
+    point: { type: 'Point', coordinates: [75.0, 15.46] },
+    precision: 'city', radiusMeters: 15000,
+  };
+  it('accepts a response without resolvedLocation', () => {
+    expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [], meta } }).success).toBe(true);
+  });
+  it('accepts a response with resolvedLocation', () => {
+    expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [], meta, resolvedLocation } }).success).toBe(true);
+  });
+  it('rejects an unknown precision', () => {
+    const bad = { ...resolvedLocation, precision: 'street' };
+    expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [], meta, resolvedLocation: bad } }).success).toBe(false);
+  });
+});
