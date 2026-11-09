@@ -75,4 +75,45 @@ describe('loadConfig', () => {
       loadConfig({ ...base, PUBLIC_API_BASE_URL: 'https://search.example.org' }).apiReference.publicBaseUrl,
     ).toBe('https://search.example.org');
   });
+
+  describe('geocode', () => {
+    const geo = {
+      SIGNALS_GEOCODE_URL: 'http://signals:3000/api/v1/geocode',
+      KEYCLOAK_TOKEN_URL: 'http://kc/realms/r/protocol/openid-connect/token',
+      KEYCLOAK_CLIENT_ID: 'search',
+      KEYCLOAK_CLIENT_SECRET: 's3cret',
+    };
+
+    it('leaves geocode undefined when none of the vars are set', () => {
+      expect(loadConfig(base).geocode).toBeUndefined();
+    });
+
+    it('populates geocode when all four vars are set', () => {
+      expect(loadConfig({ ...base, ...geo }).geocode).toEqual({
+        baseUrl: geo.SIGNALS_GEOCODE_URL,
+        tokenUrl: geo.KEYCLOAK_TOKEN_URL,
+        clientId: 'search',
+        clientSecret: 's3cret',
+        timeoutMs: 2000,
+      });
+    });
+
+    it('throws naming the missing vars when only some are set', () => {
+      expect(() => loadConfig({ ...base, SIGNALS_GEOCODE_URL: geo.SIGNALS_GEOCODE_URL })).toThrow(
+        /KEYCLOAK_TOKEN_URL.*KEYCLOAK_CLIENT_ID.*KEYCLOAK_CLIENT_SECRET/,
+      );
+    });
+
+    it('defaults and overrides the per-precision radii', () => {
+      expect(loadConfig(base).search.radiusByPrecision).toEqual({
+        postal_code: 10000,
+        locality: 10000,
+        city: 25000,
+        district: 50000,
+      });
+      expect(
+        loadConfig({ ...base, SEARCH_RADIUS_CITY_METERS: '30000' }).search.radiusByPrecision.city,
+      ).toBe(30000);
+    });
+  });
 });

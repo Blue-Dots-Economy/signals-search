@@ -14,6 +14,8 @@ import { z } from 'zod';
 import type { Sql } from 'postgres';
 import type { Redis } from 'ioredis';
 import type { Embedder } from '../embedding/provider.js';
+import type { Geocoder } from '../geo/geocoder.js';
+import type { PlacePrecision } from './schemas.js';
 import type { NetworkRegistry } from '../config/network_registry.js';
 import { registerSearchRoute } from './search_route.js';
 import { registerRelevanceRoute } from './relevance_route.js';
@@ -47,6 +49,8 @@ export type ApiDeps = {
   cacheTtlSeconds: number;
   embeddingDim: number;
   defaultDistanceMeters: number;
+  geocoder?: Geocoder;
+  radiusByPrecision?: Record<PlacePrecision, number>;
 };
 
 export type ApiReferenceOptions = { enabled: boolean; publicBaseUrl?: string };
