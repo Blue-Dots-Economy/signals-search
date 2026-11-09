@@ -8,6 +8,9 @@ import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
 import { TeiReranker } from '../rerank/reranker.js';
 import { unflatten } from './unflatten.js';
+import { DEFAULT_RADIUS_BY_PRECISION } from '../config.js';
+
+type ResolvedLocation = NonNullable<SearchResponse['message']['resolvedLocation']>;
 
 // Re-exported from the wire schema so accepted and reported values cannot drift.
 export type { SortMode } from './schemas.js';
@@ -66,6 +69,10 @@ export function resolveOrderingCenter(input: {
 
 // Single execution path for /v1/search and /v1/search/flat; the routes differ
 // only in how they parse the body into a SearchRequest.
+function geocoderUnavailable(reply: FastifyReply): FastifyReply {
+  return reply.code(503).send({ error: 'GEOCODER_UNAVAILABLE', message: 'Geocoding is temporarily unavailable; retry later' });
+}
+
 async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest): Promise<FastifyReply> {
   const { context, message } = body;
   const { networkId, domain, itemType } = context;
@@ -126,7 +133,33 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
   // Radius centre: the explicit geometry, else the anchor's location (the schema
   // requires item.id when geometry is absent), else 422.
   let spatialParam: { lat: number; lng: number; distanceMeters: number } | undefined;
-  if (radiusClause) {
+  let resolvedLocation: ResolvedLocation | undefined;
+  if (radiusClause?.address) {
+    // Checked before the anchor fallback: an address clause has no geometry and no anchor.
+    if (!deps.geocoder) return geocoderUnavailable(reply);
+    const found = await deps.geocoder.resolve(radiusClause.address);
+    if (found.kind === 'not_found') {
+      return reply.code(422).send({
+        error: 'LOCATION_NOT_RESOLVED',
+        message: `Could not resolve location '${radiusClause.address}' to a place`,
+      });
+    }
+    if (found.kind === 'unavailable') {
+      // The address is user input and can be PII; log the reason only.
+      reply.log.warn({ reason: found.reason }, 'geocoder unavailable');
+      return geocoderUnavailable(reply);
+    }
+    const radii = deps.radiusByPrecision ?? DEFAULT_RADIUS_BY_PRECISION;
+    const radiusMeters = radiusClause.distanceMeters ?? radii[found.precision];
+    spatialParam = { lat: found.lat, lng: found.lng, distanceMeters: radiusMeters };
+    resolvedLocation = {
+      input: radiusClause.address,
+      label: found.label,
+      point: { type: 'Point', coordinates: [found.lng, found.lat] },
+      precision: found.precision,
+      radiusMeters,
+    };
+  } else if (radiusClause) {
     const distanceMeters = radiusClause.distanceMeters ?? deps.defaultDistanceMeters;
     if (radiusClause.geometry) {
       spatialParam = { lat: radiusClause.geometry.coordinates[1], lng: radiusClause.geometry.coordinates[0], distanceMeters };
@@ -224,6 +257,7 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
         ...(r.distanceMeters != null ? { distanceMeters: Math.round(r.distanceMeters) } : {}),
       })),
       meta: { total, limit: pagination.limit, offset: pagination.offset, sort_applied: sortApplied },
+      ...(resolvedLocation ? { resolvedLocation } : {}),
     },
   };
   await setCached(deps.redis, key, response, deps.cacheTtlSeconds);
@@ -237,6 +271,7 @@ const SEARCH_RESPONSES = {
   403: ErrorSchema,
   404: ErrorSchema,
   422: ErrorSchema,
+  503: ErrorSchema,
 } as const;
 
 async function requireApiKey(deps: ApiDeps, apiKey: string | undefined, reply: FastifyReply): Promise<boolean> {
