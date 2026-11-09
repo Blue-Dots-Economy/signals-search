@@ -66,6 +66,7 @@ const EnvSchema = z
   API_REFERENCE_ENABLED: z.enum(['true', 'false']).default('true'),
   API_REFERENCE_FORCE: z.enum(['true', 'false']).default('false'),
   PUBLIC_API_BASE_URL: z.string().url().optional(),
+  // Signals API base URL (no path); the geocoder appends /api/v1/geo/resolve.
   SIGNALS_GEOCODE_URL: z.string().url().optional(),
   KEYCLOAK_TOKEN_URL: z.string().url().optional(),
   KEYCLOAK_CLIENT_ID: z.string().min(1).optional(),

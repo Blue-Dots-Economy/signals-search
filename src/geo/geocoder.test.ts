@@ -98,4 +98,55 @@ describe('SignalsGeocoder', () => {
     const r = await make(f, tokens()).resolve('12 Secret Street');
     expect(JSON.stringify(r)).not.toContain('Secret');
   });
+
+  describe('single deadline', () => {
+    const hang = (_u: unknown, init?: RequestInit) =>
+      new Promise<Response>((_res, rej) => {
+        init?.signal?.addEventListener('abort', () => rej(init.signal!.reason));
+      });
+    const waitAbort = (signal?: AbortSignal) =>
+      new Promise<string>((_res, rej) => {
+        signal?.addEventListener('abort', () => rej(signal.reason));
+      });
+
+    it('a slow token fetch plus a slow call cannot exceed the deadline', async () => {
+      const t: TokenSource = {
+        getToken: vi.fn(async (signal?: AbortSignal) => {
+          await new Promise((r) => setTimeout(r, 120));
+          if (signal?.aborted) throw signal.reason;
+          return 'tok';
+        }),
+        invalidate: vi.fn(),
+      };
+      const g = new SignalsGeocoder({ baseUrl: 'http://s', tokens: t, timeoutMs: 200, fetchImpl: hang as typeof fetch });
+      const start = Date.now();
+      const r = await g.resolve('x');
+      expect(r.kind).toBe('unavailable');
+      expect(Date.now() - start).toBeLessThan(400);
+    });
+
+    it('a token fetch that never resolves still ends at the deadline', async () => {
+      const t: TokenSource = { getToken: vi.fn(waitAbort), invalidate: vi.fn() };
+      const g = new SignalsGeocoder({ baseUrl: 'http://s', tokens: t, timeoutMs: 100, fetchImpl: vi.fn() as unknown as typeof fetch });
+      const start = Date.now();
+      expect((await g.resolve('x')).kind).toBe('unavailable');
+      expect(Date.now() - start).toBeLessThan(400);
+    });
+
+    it('a 401 retry after most of the budget is used still ends by the deadline', async () => {
+      let n = 0;
+      const f = vi.fn(async (u: unknown, init?: RequestInit) => {
+        if (++n === 1) {
+          await new Promise((r) => setTimeout(r, 150));
+          return json(401, {});
+        }
+        return hang(u, init);
+      });
+      const g = new SignalsGeocoder({ baseUrl: 'http://s', tokens: tokens(), timeoutMs: 200, fetchImpl: f as unknown as typeof fetch });
+      const start = Date.now();
+      expect((await g.resolve('x')).kind).toBe('unavailable');
+      expect(f).toHaveBeenCalledTimes(2);
+      expect(Date.now() - start).toBeLessThan(400);
+    });
+  });
 });

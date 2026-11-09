@@ -29,6 +29,7 @@ async function main() {
     deps: { sql, redis, embedder, registry, rerank: cfg.rerank, cacheTtlSeconds: cfg.cache.ttlSeconds, embeddingDim: cfg.embedding.dim, defaultDistanceMeters: cfg.search.defaultDistanceMeters, geocoder, radiusByPrecision: cfg.search.radiusByPrecision },
     apiReference: cfg.apiReference,
   });
+  if (!geocoder) app.log.info('text-address search disabled: geocoding is not configured');
 
   // Graceful shutdown: drain HTTP, then close Redis and Postgres. Guarded so a
   // second signal cannot double-close.

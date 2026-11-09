@@ -73,4 +73,22 @@ describe('ClientCredentialsTokenSource', () => {
     const f = vi.fn(async () => new Response('{"expires_in":5}', { status: 200 }));
     await expect(make(f as unknown as typeof fetch, () => 0).getToken()).rejects.toThrow();
   });
+
+  it('one caller aborting does not fail a concurrent caller sharing the fetch', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const f = vi.fn(async () => {
+      await gate;
+      return tokenResponse('tok');
+    });
+    const src = make(f as unknown as typeof fetch, () => 0);
+    const ctl = new AbortController();
+    const aborted = src.getToken(ctl.signal);
+    const other = src.getToken(AbortSignal.timeout(5000));
+    ctl.abort(new Error('deadline'));
+    await expect(aborted).rejects.toThrow('deadline');
+    release();
+    expect(await other).toBe('tok');
+    expect(f).toHaveBeenCalledTimes(1);
+  });
 });

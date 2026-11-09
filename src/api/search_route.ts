@@ -67,12 +67,12 @@ export function resolveOrderingCenter(input: {
   return undefined;
 }
 
-// Single execution path for /v1/search and /v1/search/flat; the routes differ
-// only in how they parse the body into a SearchRequest.
 function geocoderUnavailable(reply: FastifyReply): FastifyReply {
   return reply.code(503).send({ error: 'GEOCODER_UNAVAILABLE', message: 'Geocoding is temporarily unavailable; retry later' });
 }
 
+// Single execution path for /v1/search and /v1/search/flat; the routes differ
+// only in how they parse the body into a SearchRequest.
 async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest): Promise<FastifyReply> {
   const { context, message } = body;
   const { networkId, domain, itemType } = context;
@@ -130,8 +130,8 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     [queryVector] = await deps.embedder.embed([message.intent.textSearch]);
   }
 
-  // Radius centre: the explicit geometry, else the anchor's location (the schema
-  // requires item.id when geometry is absent), else 422.
+  // Radius centre: the explicit geometry, else the resolved address, else the
+  // anchor's location (the schema requires item.id when geometry is absent), else 422.
   let spatialParam: { lat: number; lng: number; distanceMeters: number } | undefined;
   let resolvedLocation: ResolvedLocation | undefined;
   if (radiusClause?.address) {

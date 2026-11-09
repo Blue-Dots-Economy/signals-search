@@ -78,7 +78,7 @@ describe('loadConfig', () => {
 
   describe('geocode', () => {
     const geo = {
-      SIGNALS_GEOCODE_URL: 'http://signals:3000/api/v1/geocode',
+      SIGNALS_GEOCODE_URL: 'http://signals:3000',
       KEYCLOAK_TOKEN_URL: 'http://kc/realms/r/protocol/openid-connect/token',
       KEYCLOAK_CLIENT_ID: 'search',
       KEYCLOAK_CLIENT_SECRET: 's3cret',

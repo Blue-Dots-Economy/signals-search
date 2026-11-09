@@ -1,5 +1,6 @@
 export interface TokenSource {
-  getToken(): Promise<string>;
+  /** `signal` bounds only this caller's wait; a shared in-flight fetch is never aborted by it. */
+  getToken(signal?: AbortSignal): Promise<string>;
   invalidate(): void;
 }
 
@@ -31,12 +32,12 @@ export class ClientCredentialsTokenSource implements TokenSource {
     this.now = opts.now ?? Date.now;
   }
 
-  async getToken(): Promise<string> {
+  async getToken(signal?: AbortSignal): Promise<string> {
     if (this.cached && this.now() < this.cached.expiresAt) return this.cached.value;
     this.inflight ??= this.fetchToken().finally(() => {
       this.inflight = null;
     });
-    return this.inflight;
+    return signal ? waitOrAbort(this.inflight, signal) : this.inflight;
   }
 
   invalidate(): void {
@@ -66,4 +67,14 @@ export class ClientCredentialsTokenSource implements TokenSource {
     };
     return body.access_token;
   }
+}
+
+/** Resolves with `p`, or rejects when `signal` fires; `p` itself keeps running for other waiters. */
+function waitOrAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }

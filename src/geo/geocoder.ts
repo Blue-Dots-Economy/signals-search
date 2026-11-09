@@ -35,11 +35,13 @@ export class SignalsGeocoder implements Geocoder {
   }
 
   async resolve(address: string): Promise<GeocodeResult> {
+    // One deadline covers the token fetch, the call and the 401 retry.
+    const signal = AbortSignal.timeout(this.opts.timeoutMs);
     try {
-      let res = await this.call(address);
+      let res = await this.call(address, signal);
       if (res.status === 401) {
         this.opts.tokens.invalidate();
-        res = await this.call(address);
+        res = await this.call(address, signal);
       }
       return await this.toResult(res);
     } catch (err) {
@@ -48,13 +50,13 @@ export class SignalsGeocoder implements Geocoder {
     }
   }
 
-  private async call(address: string): Promise<Response> {
-    const token = await this.opts.tokens.getToken();
+  private async call(address: string, signal: AbortSignal): Promise<Response> {
+    const token = await this.opts.tokens.getToken(signal);
     return this.fetchImpl(`${this.baseUrl}/api/v1/geo/resolve`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ address }),
-      signal: AbortSignal.timeout(this.opts.timeoutMs),
+      signal,
     });
   }
 
