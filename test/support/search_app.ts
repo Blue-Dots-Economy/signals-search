@@ -58,7 +58,7 @@ export async function startSearchApp(opts: SearchAppOptions): Promise<SearchApp>
     created_by text,
     PRIMARY KEY (item_network, item_domain, item_type, item_id))`;
   await sql`CREATE TABLE "apikey" (
-    id text PRIMARY KEY, key text NOT NULL, user_id text,
+    id text PRIMARY KEY, key text NOT NULL, reference_id text, user_id text,
     enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
   await sql`INSERT INTO "apikey" (id, key, user_id, enabled)
     VALUES ('k1', ${createHash('sha256').update(opts.apiKey).digest('base64url')}, 'usr_1', true)`;
