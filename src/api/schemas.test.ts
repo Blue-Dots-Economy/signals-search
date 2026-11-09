@@ -183,6 +183,10 @@ describe('IntentSchema — s_dwithin address clause', () => {
   it('accepts an address clause with distanceMeters', () => {
     expect(parse({ spatial: [{ op: 's_dwithin', address: 'Dharwad', distanceMeters: 5000 }] }).success).toBe(true);
   });
+  it('accepts a numeric address as its string form (flat-route pincode)', () => {
+    const r = parse({ spatial: [{ op: 's_dwithin', address: 580001 }] });
+    expect(r.success && r.data.message.intent.spatial?.[0]).toMatchObject({ address: '580001' });
+  });
   it('rejects a blank address', () => {
     expect(parse({ spatial: [{ op: 's_dwithin', address: '  ' }] }).success).toBe(false);
   });

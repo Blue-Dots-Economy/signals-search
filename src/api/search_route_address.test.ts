@@ -161,4 +161,26 @@ describe('address resolution and the result cache', () => {
     await post(app, addr());
     expect(geocoder.calls).toBe(2);
   });
+
+  it('the flat route accepts a numeric pincode address and sends it as a string', async () => {
+    const seen: string[] = [];
+    const geocoder: Geocoder = {
+      resolve: async (address: string) => {
+        seen.push(address);
+        return foundNearA();
+      },
+    };
+    const app = build({ geocoder });
+    const flat = await post(app, {
+      'context.messageId': 'm1',
+      'context.networkId': ctx.networkId,
+      'context.domain': ctx.domain,
+      'context.itemType': ctx.itemType,
+      'message.intent.spatial.0.op': 's_dwithin',
+      'message.intent.spatial.0.address': '580001',
+    }, '/v1/search/flat');
+    expect(flat.statusCode).toBe(200);
+    expect(seen).toEqual(['580001']);
+    expect(flat.json().message.resolvedLocation.input).toBe('580001');
+  });
 });

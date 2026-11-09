@@ -26,7 +26,11 @@ const DwithinClauseSchema = z.object({
   // When neither geometry nor address is given, the centre is the anchor item's stored location.
   geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }).optional(),
   // A text place name resolved to a centre; mutually exclusive with geometry and the anchor.
-  address: z.string().trim().min(1).max(200).optional(),
+  // A number is accepted and turned into a string: the flat route JSON-parses
+  // leaves, so a pincode like "580001" arrives as 580001.
+  address: z
+    .preprocess((v) => (typeof v === 'number' ? String(v) : v), z.string().trim().min(1).max(200))
+    .optional(),
   // Defaults to SEARCH_DEFAULT_DISTANCE_METERS.
   distanceMeters: z.number().positive().optional(),
 });

@@ -71,7 +71,11 @@ export class ClientCredentialsTokenSource implements TokenSource {
 
 /** Resolves with `p`, or rejects when `signal` fires; `p` itself keeps running for other waiters. */
 function waitOrAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
+  if (signal.aborted) {
+    // Nobody else may be waiting on `p`; observe its rejection so it cannot go unhandled.
+    p.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason);
     signal.addEventListener('abort', onAbort, { once: true });

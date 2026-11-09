@@ -91,4 +91,27 @@ describe('ClientCredentialsTokenSource', () => {
     expect(await other).toBe('tok');
     expect(f).toHaveBeenCalledTimes(1);
   });
+
+  it('an already-aborted caller leaves no unhandled rejection when the fetch then fails', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => unhandled.push(r);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      let fail!: () => void;
+      const gate = new Promise<void>((r) => (fail = r));
+      const f = vi.fn(async () => {
+        await gate;
+        return tokenResponse('x', 300, 500);
+      });
+      const src = make(f as unknown as typeof fetch, () => 0);
+      const ctl = new AbortController();
+      ctl.abort(new Error('deadline'));
+      await expect(src.getToken(ctl.signal)).rejects.toThrow('deadline');
+      fail();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
 });
