@@ -1,4 +1,14 @@
 import { z } from 'zod';
+import type { PlacePrecision } from './api/schemas.js';
+
+export const DEFAULT_RADIUS_BY_PRECISION: Record<PlacePrecision, number> = {
+  postal_code: 10_000,
+  locality: 10_000,
+  city: 25_000,
+  district: 50_000,
+};
+
+const GEOCODE_VARS = ['SIGNALS_GEOCODE_URL', 'KEYCLOAK_TOKEN_URL', 'KEYCLOAK_CLIENT_ID', 'KEYCLOAK_CLIENT_SECRET'] as const;
 
 // Not z.coerce.boolean(): Boolean("false") is true. Only booleans and
 // 'true'/'false'/'1'/'0' are accepted; anything else fails validation.
@@ -8,7 +18,8 @@ const envBool = (defaultValue: boolean) =>
     .default(defaultValue)
     .transform((v) => v === true || v === 'true' || v === '1');
 
-const EnvSchema = z.object({
+const EnvSchema = z
+  .object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   EMBEDDING_BASE_URL: z.string().url(),
@@ -55,7 +66,23 @@ const EnvSchema = z.object({
   API_REFERENCE_ENABLED: z.enum(['true', 'false']).default('true'),
   API_REFERENCE_FORCE: z.enum(['true', 'false']).default('false'),
   PUBLIC_API_BASE_URL: z.string().url().optional(),
-});
+  // Signals API base URL (no path); the geocoder appends /api/v1/geo/resolve.
+  SIGNALS_GEOCODE_URL: z.string().url().optional(),
+  KEYCLOAK_TOKEN_URL: z.string().url().optional(),
+  KEYCLOAK_CLIENT_ID: z.string().min(1).optional(),
+  KEYCLOAK_CLIENT_SECRET: z.string().min(1).optional(),
+  GEOCODE_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
+  SEARCH_RADIUS_POSTAL_CODE_METERS: z.coerce.number().positive().default(DEFAULT_RADIUS_BY_PRECISION.postal_code),
+  SEARCH_RADIUS_LOCALITY_METERS: z.coerce.number().positive().default(DEFAULT_RADIUS_BY_PRECISION.locality),
+  SEARCH_RADIUS_CITY_METERS: z.coerce.number().positive().default(DEFAULT_RADIUS_BY_PRECISION.city),
+  SEARCH_RADIUS_DISTRICT_METERS: z.coerce.number().positive().default(DEFAULT_RADIUS_BY_PRECISION.district),
+  })
+  .superRefine((e, ctx) => {
+    const set = GEOCODE_VARS.filter((k) => e[k] !== undefined);
+    if (set.length === 0 || set.length === GEOCODE_VARS.length) return;
+    const missing = GEOCODE_VARS.filter((k) => e[k] === undefined);
+    ctx.addIssue({ code: 'custom', message: `Geocoding needs all of ${GEOCODE_VARS.join(', ')}; missing: ${missing.join(', ')}` });
+  });
 
 export type Config = {
   databaseUrl: string;
@@ -69,7 +96,9 @@ export type Config = {
   networkConfigPath: string;
   rerank: { baseUrl?: string; model: string; defaultOn: boolean; topN: number };
   cache: { ttlSeconds: number };
-  search: { defaultDistanceMeters: number };
+  search: { defaultDistanceMeters: number; radiusByPrecision: Record<PlacePrecision, number> };
+  // clientSecret must never be logged.
+  geocode?: { baseUrl: string; tokenUrl: string; clientId: string; clientSecret: string; timeoutMs: number };
   apiReference: { enabled: boolean; publicBaseUrl?: string };
 };
 
@@ -86,7 +115,25 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     networkConfigPath: e.NETWORK_CONFIG_PATH,
     rerank: { baseUrl: e.RERANK_BASE_URL, model: e.RERANK_MODEL, defaultOn: e.RERANK_DEFAULT, topN: e.RESULT_TOPN },
     cache: { ttlSeconds: e.CACHE_TTL_SECONDS },
-    search: { defaultDistanceMeters: e.SEARCH_DEFAULT_DISTANCE_METERS },
+    search: {
+      defaultDistanceMeters: e.SEARCH_DEFAULT_DISTANCE_METERS,
+      radiusByPrecision: {
+        postal_code: e.SEARCH_RADIUS_POSTAL_CODE_METERS,
+        locality: e.SEARCH_RADIUS_LOCALITY_METERS,
+        city: e.SEARCH_RADIUS_CITY_METERS,
+        district: e.SEARCH_RADIUS_DISTRICT_METERS,
+      },
+    },
+    geocode:
+      e.SIGNALS_GEOCODE_URL && e.KEYCLOAK_TOKEN_URL && e.KEYCLOAK_CLIENT_ID && e.KEYCLOAK_CLIENT_SECRET
+        ? {
+            baseUrl: e.SIGNALS_GEOCODE_URL,
+            tokenUrl: e.KEYCLOAK_TOKEN_URL,
+            clientId: e.KEYCLOAK_CLIENT_ID,
+            clientSecret: e.KEYCLOAK_CLIENT_SECRET,
+            timeoutMs: e.GEOCODE_TIMEOUT_MS,
+          }
+        : undefined,
     runMigrations: e.RUN_MIGRATIONS,
     apiReference: {
       enabled:

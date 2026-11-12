@@ -227,6 +227,11 @@
                                         "coordinates"
                                       ]
                                     },
+                                    "address": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 200
+                                    },
                                     "distanceMeters": {
                                       "type": "number",
                                       "minimum": 0,
@@ -553,6 +558,68 @@
                             "sort_applied"
                           ],
                           "additionalProperties": false
+                        },
+                        "resolvedLocation": {
+                          "type": "object",
+                          "properties": {
+                            "input": {
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "point": {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "Point"
+                                  ]
+                                },
+                                "coordinates": {
+                                  "type": "array",
+                                  "items": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ]
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "precision": {
+                              "type": "string",
+                              "enum": [
+                                "postal_code",
+                                "locality",
+                                "city",
+                                "district"
+                              ]
+                            },
+                            "radiusMeters": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "input",
+                            "label",
+                            "point",
+                            "precision",
+                            "radiusMeters"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -664,6 +731,29 @@
             }
           },
           "422": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
             "description": "Default Response",
             "content": {
               "application/json": {
@@ -875,6 +965,68 @@
                             "sort_applied"
                           ],
                           "additionalProperties": false
+                        },
+                        "resolvedLocation": {
+                          "type": "object",
+                          "properties": {
+                            "input": {
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "point": {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "Point"
+                                  ]
+                                },
+                                "coordinates": {
+                                  "type": "array",
+                                  "items": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ]
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "coordinates"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "precision": {
+                              "type": "string",
+                              "enum": [
+                                "postal_code",
+                                "locality",
+                                "city",
+                                "district"
+                              ]
+                            },
+                            "radiusMeters": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "input",
+                            "label",
+                            "point",
+                            "precision",
+                            "radiusMeters"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -986,6 +1138,29 @@
             }
           },
           "422": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
             "description": "Default Response",
             "content": {
               "application/json": {
