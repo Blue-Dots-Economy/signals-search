@@ -3,6 +3,8 @@ import { loadConfig } from '../config.js';
 import { createApiSqlClient } from '../db/client.js';
 import { buildServer } from './server.js';
 import { OpenAiCompatibleEmbedder } from '../embedding/provider.js';
+import { SignalsGeocoder } from '../geo/geocoder.js';
+import { ClientCredentialsTokenSource } from '../geo/token_source.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
 
 async function main() {
@@ -11,10 +13,23 @@ async function main() {
   const redis = new Redis(cfg.redisUrl);
   const embedder = new OpenAiCompatibleEmbedder(cfg.embedding);
   const registry = await loadNetworkRegistry(cfg.networkConfigPath);
+  const geocoder = cfg.geocode
+    ? new SignalsGeocoder({
+        baseUrl: cfg.geocode.baseUrl,
+        timeoutMs: cfg.geocode.timeoutMs,
+        tokens: new ClientCredentialsTokenSource({
+          tokenUrl: cfg.geocode.tokenUrl,
+          clientId: cfg.geocode.clientId,
+          clientSecret: cfg.geocode.clientSecret,
+          timeoutMs: cfg.geocode.timeoutMs,
+        }),
+      })
+    : undefined;
   const app = buildServer({
-    deps: { sql, redis, embedder, registry, rerank: cfg.rerank, cacheTtlSeconds: cfg.cache.ttlSeconds, embeddingDim: cfg.embedding.dim, defaultDistanceMeters: cfg.search.defaultDistanceMeters },
+    deps: { sql, redis, embedder, registry, rerank: cfg.rerank, cacheTtlSeconds: cfg.cache.ttlSeconds, embeddingDim: cfg.embedding.dim, defaultDistanceMeters: cfg.search.defaultDistanceMeters, geocoder, radiusByPrecision: cfg.search.radiusByPrecision },
     apiReference: cfg.apiReference,
   });
+  if (!geocoder) app.log.info('text-address search disabled: geocoding is not configured');
 
   // Graceful shutdown: drain HTTP, then close Redis and Postgres. Guarded so a
   // second signal cannot double-close.

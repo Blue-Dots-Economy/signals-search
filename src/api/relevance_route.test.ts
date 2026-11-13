@@ -29,7 +29,7 @@ function vec(first: number) { const v = Array.from({ length: N }, () => 0); v[0]
 
 beforeAll(async () => {
   pg = await startPostgres(); const url = pg.getConnectionUri(); await runMigrations(url); sql = sqlClient(url);
-  await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, user_id text, enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
+  await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, reference_id text, user_id text, enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
   await sql`INSERT INTO "apikey" (id,key,user_id,enabled) VALUES ('k1', ${createHash('sha256').update(RAW).digest('base64url')}, 'usr_1', true)`;
   const repo = new ItemSearchRepo(sql, N);
   await repo.upsert({ ...seekerBase, item_id: SEEKER, embedding: vec(1), locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: 's' });
