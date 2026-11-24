@@ -55,23 +55,24 @@ const EpochSecondsSchema = z.number().int().min(0).max(MAX_EPOCH_SECONDS);
 
 export const STATUS_GROUPS = ['create', 'accept', 'reject', 'cancel'] as const;
 
-const ACTION_MATCH_TARGETS = ['type', 'status', 'status_group'];
-const ACTION_DATE_TARGETS = ['created_at', 'status_updated_at'];
-const ACTION_MATCH_OPS = ['eq', 'neq', 'in', 'not_in'];
-const ACTION_DATE_OPS = ['gte', 'lte'];
+const ACTION_MATCH_TARGETS = new Set(['type', 'status', 'status_group']);
+const ACTION_DATE_TARGETS = new Set(['created_at', 'status_updated_at']);
+const ACTION_MATCH_OPS = new Set(['eq', 'neq', 'in', 'not_in']);
+const ACTION_DATE_OPS = new Set(['gte', 'lte']);
+const STATUS_GROUP_SET: ReadonlySet<string> = new Set(STATUS_GROUPS);
 
 const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 
 function checkActionClause(f: { op: string; target: string; value: unknown }, ctx: z.RefinementCtx): void {
-  if (ACTION_DATE_TARGETS.includes(f.target)) {
-    if (!ACTION_DATE_OPS.includes(f.op)) {
+  if (ACTION_DATE_TARGETS.has(f.target)) {
+    if (!ACTION_DATE_OPS.has(f.op)) {
       ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}' (use gte or lte)`, path: ['op'] });
     } else if (!EpochSecondsSchema.safeParse(f.value).success) {
       ctx.addIssue({ code: 'custom', message: `action target '${f.target}' requires whole epoch seconds`, path: ['value'] });
     }
     return;
   }
-  if (!ACTION_MATCH_TARGETS.includes(f.target)) {
+  if (!ACTION_MATCH_TARGETS.has(f.target)) {
     ctx.addIssue({
       code: 'custom',
       message: `action target must be one of ${[...ACTION_MATCH_TARGETS, ...ACTION_DATE_TARGETS].join(', ')}`,
@@ -79,7 +80,7 @@ function checkActionClause(f: { op: string; target: string; value: unknown }, ct
     });
     return;
   }
-  if (!ACTION_MATCH_OPS.includes(f.op)) {
+  if (!ACTION_MATCH_OPS.has(f.op)) {
     ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}'`, path: ['op'] });
     return;
   }
@@ -94,7 +95,7 @@ function checkActionClause(f: { op: string; target: string; value: unknown }, ct
     return;
   }
   if (f.target === 'status_group') {
-    const unknown = values.filter((v) => !(STATUS_GROUPS as readonly string[]).includes(v));
+    const unknown = values.filter((v) => !STATUS_GROUP_SET.has(v));
     if (unknown.length > 0) {
       ctx.addIssue({ code: 'custom', message: `unknown status_group ${unknown.join(', ')}; use ${STATUS_GROUPS.join(', ')}`, path: ['value'] });
     }
@@ -111,7 +112,7 @@ const FilterClauseSchema = z.object({
     checkActionClause(f, ctx);
     return;
   }
-  if (!/^item_state\.[A-Za-z0-9_]+$/.test(f.target)) {
+  if (!/^item_state\.\w+$/.test(f.target)) {
     ctx.addIssue({ code: 'custom', message: 'target must be item_state.<field>', path: ['target'] });
   }
   if (f.op === 'not_in') {
@@ -145,7 +146,7 @@ const DateRangeSchema = z.object({
   message: 'gte must not be later than lte',
 });
 
-export const IntentSchema = z.object({
+const IntentFieldsSchema = z.object({
   textSearch: z.string().min(1).optional(),
   // z.guid(), not z.uuid(): zod 4's .uuid() enforces RFC 9562 version/variant
   // nibbles and would reject accepted ids like '1111...-1111'. Tightening this
@@ -163,7 +164,11 @@ export const IntentSchema = z.object({
   include_action: z.boolean().optional(),
   created_at: DateRangeSchema.optional(),
   updated_at: DateRangeSchema.optional(),
-}).superRefine((intent, ctx) => {
+});
+
+type IntentFields = z.infer<typeof IntentFieldsSchema>;
+
+function checkActionAnchor(intent: IntentFields, ctx: z.RefinementCtx): void {
   if (!intent.item?.id) {
     if (intent.include_action) {
       ctx.addIssue({ code: 'custom', message: 'include_action requires intent.item.id', path: ['include_action'] });
@@ -172,7 +177,9 @@ export const IntentSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'an action filter requires intent.item.id', path: ['filters'] });
     }
   }
+}
 
+function checkAnchorlessSpatial(intent: IntentFields, ctx: z.RefinementCtx): void {
   // An s_dwithin clause with neither geometry nor address takes its centre from
   // the anchor, so it requires item.id. A bbox carries its own bounds.
   const hasAnchorlessSpatial = (intent.spatial ?? []).some(
@@ -185,7 +192,9 @@ export const IntentSchema = z.object({
       path: ['spatial'],
     });
   }
+}
 
+function checkAddressClauses(intent: IntentFields, ctx: z.RefinementCtx): void {
   for (const s of intent.spatial ?? []) {
     if (s.op !== 's_dwithin' || !s.address) continue;
     if (s.geometry) {
@@ -195,7 +204,9 @@ export const IntentSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'address cannot be combined with intent.item.id', path: ['spatial'] });
     }
   }
+}
 
+function checkBboxClauses(intent: IntentFields, ctx: z.RefinementCtx): void {
   // Misordered bounds are rejected, not swapped: swapping would search an area
   // the caller did not ask for. minLng > maxLng is an antimeridian-crossing
   // viewport, which is unsupported and would otherwise return an empty page.
@@ -216,6 +227,13 @@ export const IntentSchema = z.object({
       });
     }
   }
+}
+
+export const IntentSchema = IntentFieldsSchema.superRefine((intent, ctx) => {
+  checkActionAnchor(intent, ctx);
+  checkAnchorlessSpatial(intent, ctx);
+  checkAddressClauses(intent, ctx);
+  checkBboxClauses(intent, ctx);
 });
 
 export const PaginationSchema = z.object({

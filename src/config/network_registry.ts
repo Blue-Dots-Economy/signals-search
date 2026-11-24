@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveVectorizeFields, type VectorizeField, type ItemSchema } from './vectorize_fields.js';
 
-type MetricBucket = 'create' | 'accept' | 'reject' | 'cancel';
+export type MetricBucket = 'create' | 'accept' | 'reject' | 'cancel';
 type Interaction = {
   from_network: string; from_domain: string; to_network: string; to_domain: string;
   metric_categories?: Partial<Record<MetricBucket, string[]>> | null;
@@ -14,7 +14,6 @@ type NetworkConfig = {
   actions?: Record<string, { interactions?: Interaction[] }>;
 };
 
-export type StatusGroup = MetricBucket;
 export type StatusSet = { statuses: string[]; negate: boolean };
 
 const FALLBACK_CLOSED_STATUSES = ['accepted', 'completed', 'cancelled', 'rejected', 'declined', 'withdrawn'];
@@ -48,7 +47,7 @@ export type NetworkRegistry = {
     toDomain: string,
   ): boolean;
   actionTypes(network: string): string[];
-  statusGroup(network: string, group: StatusGroup): StatusSet;
+  statusGroup(network: string, group: MetricBucket): StatusSet;
 };
 
 async function readConfigs(path: string): Promise<NetworkConfig[]> {

@@ -4,7 +4,7 @@ import type { ApiDeps } from './server.js';
 import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse, type SortMode } from './schemas.js';
 import { authenticateApiKey } from './auth.js';
 import { searchItems, type ActionFilter, type ActionMatch, type FilterClause } from '../db/search_query.js';
-import type { NetworkRegistry, StatusGroup } from '../config/network_registry.js';
+import type { MetricBucket, NetworkRegistry } from '../config/network_registry.js';
 import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
 import { TeiReranker } from '../rerank/reranker.js';
@@ -27,7 +27,7 @@ function toActionFilter(registry: NetworkRegistry, network: string, f: ActionCla
   let anyOf: ActionMatch[];
   if (f.target === 'status_group') {
     anyOf = values.map((g) => {
-      const set = registry.statusGroup(network, g as StatusGroup);
+      const set = registry.statusGroup(network, g as MetricBucket);
       return { field: 'action_status', values: set.statuses, negate: set.negate };
     });
   } else {
