@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createHash } from 'node:crypto';
-import { startPostgres, sqlClient } from '../../test/support/pg.js';
+import { startPostgres, sqlClient, createItemActionsTable } from '../../test/support/pg.js';
 import { runMigrations } from '../db/migrate.js';
 import { ItemSearchRepo } from '../db/item_search_repo.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
@@ -29,6 +29,7 @@ beforeAll(async () => {
   await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES
     (${seekerBase.item_network},${seekerBase.item_domain},${seekerBase.item_type},${S1},'{"needs":"speech therapy"}','[{"lat":12.93,"lng":77.62}]'),
     (${seekerBase.item_network},${seekerBase.item_domain},${seekerBase.item_type},${S2},'{"needs":"speech therapy"}','[]')`;
+  await createItemActionsTable(sql);
   await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, reference_id text, user_id text, enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
   await sql`INSERT INTO "apikey" (id,key,user_id,enabled) VALUES ('k1', ${createHash('sha256').update(RAW).digest('base64url')}, 'usr_1', true)`;
   const repo = new ItemSearchRepo(sql, N);
@@ -124,5 +125,140 @@ describe('POST /v1/search — anchor + location (#21)', () => {
     const res = await app.inject({ method: 'POST', url: '/v1/search', headers: { 'x-api-key': RAW }, payload: anchorBody({ item: { id: B } }) });
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBe('ANCHOR_NOT_FOUND');
+  });
+});
+
+describe('POST /v1/search — action filters, include_action and date ranges', () => {
+  const post = (intent: Record<string, unknown>) =>
+    app.inject({ method: 'POST', url: '/v1/search', headers: { 'x-api-key': RAW }, payload: anchorBody(intent) });
+  const ids = (res: { json: () => { message: { items: { item_id: string }[] } } }) => res.json().message.items.map((i) => i.item_id);
+  const setAction = async (status: string) => {
+    await sql`DELETE FROM item_actions`;
+    await sql`INSERT INTO item_actions (partition_network,action_type,action_status,source_item_id,target_item_id,remarks,requirements_snapshot,created_at,updated_at)
+      VALUES ('purple_dot','apply',${status},${S1},${A},'private note','{"phone":"9999999999"}','2026-11-10T09:12:00Z','2026-11-12T15:40:00Z')`;
+  };
+  const excludeCreate = { objType: 'action', op: 'neq', target: 'status_group', value: 'create' };
+
+  it('hides a job with a pending action and keeps it once the action is closed', async () => {
+    await setAction('submitted');
+    const pending = await post({ item: { id: S1 }, filters: [excludeCreate] });
+    expect(pending.statusCode).toBe(200);
+    expect(ids(pending)).toEqual([]);
+    expect(pending.json().message.meta.total).toBe(0);
+
+    await setAction('rejected');
+    expect(ids(await post({ item: { id: S1 }, filters: [excludeCreate] }))).toEqual([A]);
+  });
+
+  it('combines an action clause with item filters', async () => {
+    await setAction('rejected');
+    const res = await post({
+      item: { id: S1 },
+      filters: [excludeCreate, { op: 'eq', target: 'item_state.provider_category', value: 'Private' }],
+    });
+    expect(ids(res)).toEqual([]);
+  });
+
+  it('a network without metric_categories has an empty reject group, so exact statuses are needed', async () => {
+    await setAction('rejected');
+    const byGroup = await post({ item: { id: S1 }, filters: [{ objType: 'action', op: 'neq', target: 'status_group', value: 'reject' }] });
+    const byStatus = await post({ item: { id: S1 }, filters: [{ objType: 'action', op: 'not_in', target: 'status', value: ['rejected'] }] });
+    expect(ids(byGroup)).toEqual([A]);
+    expect(ids(byStatus)).toEqual([]);
+  });
+
+  it('include_action returns the latest action and never remarks or the requirements snapshot', async () => {
+    await setAction('submitted');
+    const res = await post({ item: { id: S1 }, include_action: true });
+    expect(res.statusCode).toBe(200);
+    const [item] = res.json().message.items;
+    expect(item.action).toEqual({
+      type: 'apply', status: 'submitted', created_at: '2026-11-10T09:12:00.000Z', status_updated_at: '2026-11-12T15:40:00.000Z',
+    });
+    expect(res.body).not.toContain('private note');
+    expect(res.body).not.toContain('9999999999');
+  });
+
+  it('omits action when include_action is off', async () => {
+    await setAction('submitted');
+    const [item] = (await post({ item: { id: S1 } })).json().message.items;
+    expect(item.action).toBeUndefined();
+  });
+
+  it('400 for an action type the network does not define', async () => {
+    const res = await post({ item: { id: S1 }, filters: [{ objType: 'action', op: 'eq', target: 'type', value: 'connect' }] });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({
+      error: 'VALIDATION_ERROR',
+      message: "unknown action type 'connect' for network purple_dot; use apply, refer",
+    });
+  });
+
+  it('400 for an action filter or include_action without an anchor', async () => {
+    const filter = await post({ textSearch: 'speech therapy', filters: [excludeCreate] });
+    const include = await post({ textSearch: 'speech therapy', include_action: true });
+    expect(filter.statusCode).toBe(400);
+    expect(include.statusCode).toBe(400);
+  });
+
+  it('filters by created_at end to end (A was created on 2026-01-01)', async () => {
+    const inRange = await post({ item: { id: S1 }, created_at: { gte: 1767225600, lte: 1767311999 } });
+    expect(inRange.statusCode).toBe(200);
+    expect(ids(inRange)).toEqual([A]);
+
+    const outOfRange = await post({ item: { id: S1 }, updated_at: { gte: 1769904000 } });
+    expect(outOfRange.statusCode).toBe(200);
+    expect(outOfRange.json().message.meta.total).toBe(0);
+  });
+
+  it('400 when a date range has gte later than lte', async () => {
+    const res = await post({ textSearch: 'x', created_at: { gte: 1769904000, lte: 1767225600 } });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /v1/search — result cache with action data', () => {
+  let cachedApp: FastifyInstance;
+  const store = new Map<string, string>();
+  const calls = { get: 0, set: 0 };
+  const recordingRedis = {
+    get: async (k: string) => { calls.get += 1; return store.get(k) ?? null; },
+    set: async (k: string, v: string) => { calls.set += 1; store.set(k, v); return 'OK'; },
+  } as any;
+
+  beforeAll(async () => {
+    const registry = await loadNetworkRegistry('test/fixtures/networks');
+    cachedApp = buildServer({ deps: { sql, redis: recordingRedis, embedder: fakeEmbedder, registry, rerank: { model: 'r', defaultOn: false, topN: 50 }, cacheTtlSeconds: 45, embeddingDim: N, defaultDistanceMeters: 30000 } });
+  });
+  afterAll(async () => { await cachedApp?.close(); });
+
+  const search = (intent: Record<string, unknown>) =>
+    cachedApp.inject({ method: 'POST', url: '/v1/search', headers: { 'x-api-key': RAW }, payload: anchorBody(intent) });
+  const reset = () => { store.clear(); calls.get = 0; calls.set = 0; };
+
+  it('neither reads nor writes the cache with an action filter', async () => {
+    reset();
+    const res = await search({ item: { id: S1 }, filters: [{ objType: 'action', op: 'neq', target: 'status_group', value: 'create' }] });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toEqual({ get: 0, set: 0 });
+  });
+
+  it('neither reads nor writes the cache with include_action', async () => {
+    reset();
+    const res = await search({ item: { id: S1 }, include_action: true });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toEqual({ get: 0, set: 0 });
+  });
+
+  it('still caches an anchored search with only item filters and include_action off', async () => {
+    reset();
+    await search({ item: { id: S1 }, include_action: false, filters: [{ op: 'eq', target: 'item_state.provider_category', value: 'NGO / Trust' }] });
+    expect(calls).toEqual({ get: 1, set: 1 });
+  });
+
+  it('still caches a date-filtered search', async () => {
+    reset();
+    await search({ item: { id: S1 }, created_at: { gte: 1767225600 } });
+    expect(calls).toEqual({ get: 1, set: 1 });
   });
 });

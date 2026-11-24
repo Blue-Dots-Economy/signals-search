@@ -18,6 +18,18 @@ All are ranked-order results, optionally combined with geo and structured filter
 
 Filter clauses target `item_state.<field>` and support these operators: `eq`, `neq`, `in` (array), `gt`/`gte`/`lt`/`lte` (numeric), `contains` (jsonb `@>` — array field contains **all** given values), and `contains_any` (jsonb `?|` — array field shares **at least one** value with the given list). Field keys are always bound as parameters, never interpolated.
 
+### Action filters and the latest action
+
+With an anchor (`intent.item.id`), a filter clause with `"objType": "action"` filters on the anchor's **latest action** with each result, in either direction and of any type. Targets: `type`, `status` and `status_group` (`create`, `accept`, `reject`, `cancel`, from `metric_categories` in `network.json`; `create` is every status that is not closed) with `eq`, `neq`, `in`, `not_in`; and `created_at`, `status_updated_at` with `gte`, `lte` in epoch seconds. A result with no action never matches: `neq`/`not_in` keep it, the other operators drop it. `"include_action": true` adds the latest action (`type`, `status`, `created_at`, `status_updated_at`) to each result that has one. Requests using either skip the result cache.
+
+```json
+{ "objType": "action", "op": "neq", "target": "status_group", "value": "create" }
+```
+
+### Date filters
+
+`intent.created_at` and `intent.updated_at` take `{ "gte", "lte" }` ranges in whole epoch seconds (UTC), inclusive, on the item's own dates. They work with or without an anchor.
+
 ## How it works (one line)
 
 The Signals item write path enqueues changes to Redis → an **ingestion worker** embeds configured public attributes and upserts an `item_search` row (vector + geography) → an **API service** (`POST /v1/search`) applies hard filters, ranks by vector similarity in Postgres, and caches results in Redis.

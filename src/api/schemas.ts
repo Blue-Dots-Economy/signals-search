@@ -49,11 +49,74 @@ const BboxClauseSchema = z.object({
 // With `.max(1)` on the array below, a radius and a bbox are mutually exclusive.
 const SpatialClauseSchema = z.discriminatedUnion('op', [DwithinClauseSchema, BboxClauseSchema]);
 
+const MAX_EPOCH_SECONDS = 253402300799;
+
+const EpochSecondsSchema = z.number().int().min(0).max(MAX_EPOCH_SECONDS);
+
+export const STATUS_GROUPS = ['create', 'accept', 'reject', 'cancel'] as const;
+
+const ACTION_MATCH_TARGETS = ['type', 'status', 'status_group'];
+const ACTION_DATE_TARGETS = ['created_at', 'status_updated_at'];
+const ACTION_MATCH_OPS = ['eq', 'neq', 'in', 'not_in'];
+const ACTION_DATE_OPS = ['gte', 'lte'];
+
+const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+function checkActionClause(f: { op: string; target: string; value: unknown }, ctx: z.RefinementCtx): void {
+  if (ACTION_DATE_TARGETS.includes(f.target)) {
+    if (!ACTION_DATE_OPS.includes(f.op)) {
+      ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}' (use gte or lte)`, path: ['op'] });
+    } else if (!EpochSecondsSchema.safeParse(f.value).success) {
+      ctx.addIssue({ code: 'custom', message: `action target '${f.target}' requires whole epoch seconds`, path: ['value'] });
+    }
+    return;
+  }
+  if (!ACTION_MATCH_TARGETS.includes(f.target)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `action target must be one of ${[...ACTION_MATCH_TARGETS, ...ACTION_DATE_TARGETS].join(', ')}`,
+      path: ['target'],
+    });
+    return;
+  }
+  if (!ACTION_MATCH_OPS.includes(f.op)) {
+    ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}'`, path: ['op'] });
+    return;
+  }
+  const isList = f.op === 'in' || f.op === 'not_in';
+  const values = isList ? f.value : [f.value];
+  if (!Array.isArray(values) || values.length === 0 || !values.every(isNonEmptyString)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: isList ? `op '${f.op}' requires a non-empty array of strings` : `op '${f.op}' requires a string value`,
+      path: ['value'],
+    });
+    return;
+  }
+  if (f.target === 'status_group') {
+    const unknown = values.filter((v) => !(STATUS_GROUPS as readonly string[]).includes(v));
+    if (unknown.length > 0) {
+      ctx.addIssue({ code: 'custom', message: `unknown status_group ${unknown.join(', ')}; use ${STATUS_GROUPS.join(', ')}`, path: ['value'] });
+    }
+  }
+}
+
 const FilterClauseSchema = z.object({
-  op: z.enum(['eq', 'neq', 'in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
-  target: z.string().regex(/^item_state\.[A-Za-z0-9_]+$/, 'target must be item_state.<field>'),
+  objType: z.literal('action').optional(),
+  op: z.enum(['eq', 'neq', 'in', 'not_in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
+  target: z.string(),
   value: z.unknown(),
 }).superRefine((f, ctx) => {
+  if (f.objType === 'action') {
+    checkActionClause(f, ctx);
+    return;
+  }
+  if (!/^item_state\.[A-Za-z0-9_]+$/.test(f.target)) {
+    ctx.addIssue({ code: 'custom', message: 'target must be item_state.<field>', path: ['target'] });
+  }
+  if (f.op === 'not_in') {
+    ctx.addIssue({ code: 'custom', message: `op 'not_in' is only allowed on action clauses`, path: ['op'] });
+  }
   // Numeric comparators must carry a finite number; otherwise Number(value) in the
   // query builder yields NaN and silently matches nothing.
   if (['gt', 'gte', 'lt', 'lte'].includes(f.op) && (typeof f.value !== 'number' || !Number.isFinite(f.value))) {
@@ -75,6 +138,13 @@ const OrderingCenterSchema = z.object({
   coordinates: z.tuple([z.number(), z.number()]), // GeoJSON order: [lng, lat]
 });
 
+const DateRangeSchema = z.object({
+  gte: EpochSecondsSchema.optional(),
+  lte: EpochSecondsSchema.optional(),
+}).refine((r) => r.gte === undefined || r.lte === undefined || r.gte <= r.lte, {
+  message: 'gte must not be later than lte',
+});
+
 export const IntentSchema = z.object({
   textSearch: z.string().min(1).optional(),
   // z.guid(), not z.uuid(): zod 4's .uuid() enforces RFC 9562 version/variant
@@ -90,7 +160,19 @@ export const IntentSchema = z.object({
   // elsewhere, requests differing only in `sort` would share a cache entry.
   sort: SortModeSchema.optional(),
   orderingCenter: OrderingCenterSchema.optional(),
+  include_action: z.boolean().optional(),
+  created_at: DateRangeSchema.optional(),
+  updated_at: DateRangeSchema.optional(),
 }).superRefine((intent, ctx) => {
+  if (!intent.item?.id) {
+    if (intent.include_action) {
+      ctx.addIssue({ code: 'custom', message: 'include_action requires intent.item.id', path: ['include_action'] });
+    }
+    if (intent.filters?.some((f) => f.objType === 'action')) {
+      ctx.addIssue({ code: 'custom', message: 'an action filter requires intent.item.id', path: ['filters'] });
+    }
+  }
+
   // An s_dwithin clause with neither geometry nor address takes its centre from
   // the anchor, so it requires item.id. A bbox carries its own bounds.
   const hasAnchorlessSpatial = (intent.spatial ?? []).some(
@@ -151,6 +233,13 @@ export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 // against SearchRequestSchema after unflattening.
 export const FlatSearchRequestSchema = z.record(z.string(), z.unknown());
 
+export const ItemActionSchema = z.object({
+  type: z.string(),
+  status: z.string(),
+  created_at: z.string(),
+  status_updated_at: z.string(),
+});
+
 export const ItemResultSchema = z.object({
   item_network: z.string(),
   item_domain: z.string(),
@@ -166,6 +255,7 @@ export const ItemResultSchema = z.object({
   lifecycle_status: z.string(),
   score: z.number().optional(),
   distanceMeters: z.number().optional(),
+  action: ItemActionSchema.optional(),
 });
 
 export const SearchResponseSchema = z.object({

@@ -4,6 +4,13 @@ export type FilterClause = { op: 'eq' | 'neq' | 'in' | 'contains' | 'contains_an
 // Re-declared rather than imported so the db layer never imports from api/.
 // The wire enum lives in api/schemas.ts.
 export type SortMode = 'relevance' | 'newest' | 'nearest';
+export type DateRange = { gte?: number; lte?: number };
+export type ActionMatch =
+  | { field: 'action_type' | 'action_status'; values: string[]; negate: boolean }
+  | { field: 'created_at' | 'updated_at'; range: DateRange };
+export type ActionFilter = { exclude: boolean; anyOf: ActionMatch[] };
+export type ActionParams = { anchorId: string; filters: ActionFilter[]; include: boolean };
+export type ItemAction = { type: string; status: string; created_at: string; status_updated_at: string };
 
 export type SearchParams = {
   item_network: string;
@@ -40,6 +47,9 @@ export type SearchParams = {
   /** The `vectorize: true` field names, from registry.vectorizeFields(). */
   textSearchFields?: string[];
   filters: FilterClause[];
+  createdAt?: DateRange;
+  updatedAt?: DateRange;
+  action?: ActionParams;
   limit: number;
   offset: number;
 };
@@ -49,6 +59,7 @@ export type SearchRow = {
   item_instance_url: string | null; item_schema_url: string | null;
   created_at: string; updated_at: string; created_by: string | null; lifecycle_status: string;
   score?: number; distanceMeters?: number;
+  action?: ItemAction;
 };
 
 function fieldKey(target: string): string {
@@ -108,6 +119,55 @@ function textFragment(sql: Sql, q: string, fields: string[]): PendingQuery<Row[]
   return wrapped.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc} AND ${frag}`), wrapped[0]);
 }
 
+function joinWith(sql: Sql, parts: PendingQuery<Row[]>[], op: 'AND' | 'OR'): PendingQuery<Row[]> {
+  const sep = op === 'AND' ? sql` AND ` : sql` OR `;
+  const joined = parts.reduce((acc, part, i) => (i === 0 ? sql`(${part})` : sql`${acc}${sep}(${part})`), sql``);
+  return sql`(${joined})`;
+}
+
+function dateRangeFragment(sql: Sql, column: PendingQuery<Row[]>, r: DateRange): PendingQuery<Row[]> {
+  const parts: PendingQuery<Row[]>[] = [];
+  if (r.gte !== undefined) parts.push(sql`${column} >= to_timestamp(${r.gte}::double precision)`);
+  if (r.lte !== undefined) parts.push(sql`${column} <= to_timestamp(${r.lte}::double precision)`);
+  return parts.length > 0 ? joinWith(sql, parts, 'AND') : sql`TRUE`;
+}
+
+function actionMatchFragment(sql: Sql, m: ActionMatch): PendingQuery<Row[]> {
+  switch (m.field) {
+    case 'action_type':
+      return m.negate ? sql`l.action_type <> ALL(${m.values}::text[])` : sql`l.action_type = ANY(${m.values}::text[])`;
+    case 'action_status':
+      return m.negate ? sql`l.action_status <> ALL(${m.values}::text[])` : sql`l.action_status = ANY(${m.values}::text[])`;
+    case 'created_at':
+      return dateRangeFragment(sql, sql`l.created_at`, m.range);
+    case 'updated_at':
+      return dateRangeFragment(sql, sql`l.updated_at`, m.range);
+  }
+}
+
+function actionFilterFragment(sql: Sql, f: ActionFilter): PendingQuery<Row[]> {
+  const matches = joinWith(sql, f.anyOf.map((m) => actionMatchFragment(sql, m)), 'OR');
+  return f.exclude
+    ? sql`(l.partner IS NULL OR NOT ${matches})`
+    : sql`(l.partner IS NOT NULL AND ${matches})`;
+}
+
+function latestActionCte(sql: Sql, network: string, anchorId: string): PendingQuery<Row[]> {
+  return sql`WITH latest AS (
+    SELECT DISTINCT ON (a.partner) a.partner, a.action_type, a.action_status, a.created_at, a.updated_at
+    FROM (
+      SELECT target_item_id AS partner, action_id, action_type, action_status, created_at, updated_at
+      FROM item_actions
+      WHERE partition_network = ${network} AND source_item_id = ${anchorId}
+      UNION ALL
+      SELECT source_item_id AS partner, action_id, action_type, action_status, created_at, updated_at
+      FROM item_actions
+      WHERE partition_network = ${network} AND target_item_id = ${anchorId}
+    ) a
+    ORDER BY a.partner, a.created_at DESC, a.action_id DESC
+  )`;
+}
+
 // Only the spatial clause (radius or bbox) filters on location; an ordering
 // centre never appears here.
 function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
@@ -116,6 +176,9 @@ function buildWhere(sql: Sql, p: SearchParams): PendingQuery<Row[]> {
     sql`s.item_network = ${p.item_network} AND s.item_domain = ${p.item_domain} AND s.item_type = ${p.item_type}`,
   ];
   for (const f of p.filters) conds.push(filterFragment(sql, f));
+  if (p.createdAt) conds.push(dateRangeFragment(sql, sql`i.created_at`, p.createdAt));
+  if (p.updatedAt) conds.push(dateRangeFragment(sql, sql`i.updated_at`, p.updatedAt));
+  for (const f of p.action?.filters ?? []) conds.push(actionFilterFragment(sql, f));
   if (p.textSearch && p.textSearchFields?.length) {
     const frag = textFragment(sql, p.textSearch, p.textSearchFields);
     if (frag) conds.push(sql`(${frag})`);
@@ -227,21 +290,32 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
 
   const orderBy = buildOrderBy(sql, p, vecLiteral, distExpr, !!distCenter);
 
+  const withLatest = p.action ? latestActionCte(sql, p.item_network, p.action.anchorId) : sql``;
+  const joinLatest = p.action ? sql`LEFT JOIN latest l ON l.partner = s.item_id` : sql``;
+  const actionSel = p.action?.include
+    ? sql`, l.action_type, l.action_status, l.created_at AS action_created_at, l.updated_at AS action_updated_at`
+    : sql``;
+
   const raw = await sql<{
     item_network: string; item_domain: string; item_type: string; item_id: string;
     item_state: Record<string, unknown>; item_locations: unknown;
     item_instance_url: string | null; item_schema_url: string | null;
     created_at: Date; updated_at: Date; created_by: string | null; lifecycle_status: string;
     score: string | number | null; distanceMeters: string | number | null;
+    action_type?: string | null; action_status?: string | null;
+    action_created_at?: Date | null; action_updated_at?: Date | null;
   }[]>`
+    ${withLatest}
     SELECT s.item_network, s.item_domain, s.item_type, s.item_id::text AS item_id,
            i.item_state, i.item_locations,
            i.item_instance_url, i.item_schema_url,
            i.created_at, i.updated_at, i.created_by, i.lifecycle_status,
            ${scoreSel} AS score,
            ${distExpr} AS "distanceMeters"
+           ${actionSel}
     FROM item_search s
     JOIN items i USING (item_network, item_domain, item_type, item_id)
+    ${joinLatest}
     WHERE ${where}
     ORDER BY ${orderBy}
     LIMIT ${p.limit} OFFSET ${p.offset}`;
@@ -262,11 +336,21 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
     lifecycle_status: r.lifecycle_status,
     score: r.score !== null && r.score !== undefined ? Number(r.score) : undefined,
     distanceMeters: r.distanceMeters !== null && r.distanceMeters !== undefined ? Number(r.distanceMeters) : undefined,
+    action: r.action_type && r.action_status && r.action_created_at && r.action_updated_at
+      ? {
+          type: r.action_type,
+          status: r.action_status,
+          created_at: r.action_created_at.toISOString(),
+          status_updated_at: r.action_updated_at.toISOString(),
+        }
+      : undefined,
   }));
 
   const [{ total }] = await sql<{ total: number }[]>`
+    ${withLatest}
     SELECT count(*)::int AS total
     FROM item_search s JOIN items i USING (item_network, item_domain, item_type, item_id)
+    ${joinLatest}
     WHERE ${where}`;
 
   return { rows, total };

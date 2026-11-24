@@ -118,7 +118,7 @@
         "tags": [
           "search"
         ],
-        "description": "Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, spatial, orderingCenter, sort, and filters. Ordering: pass `intent.sort` (relevance | newest | nearest); when omitted, ordering is inferred as cosine → distance → recency for backward compatibility. `intent.spatial` FILTERS (s_dwithin); `intent.orderingCenter` only ORDERS and never filters. `meta.sort_applied` always reports the order actually used — an order whose precondition is unmet degrades to newest rather than erroring. textSearch narrows results even when an anchor supplies the ranking vector.",
+        "description": "Beckn-aligned envelope. Provide any combination of textSearch, an anchor item.id, spatial, orderingCenter, sort, and filters. Ordering: pass `intent.sort` (relevance | newest | nearest); when omitted, ordering is inferred as cosine → distance → recency for backward compatibility. `intent.spatial` FILTERS (s_dwithin); `intent.orderingCenter` only ORDERS and never filters. `meta.sort_applied` always reports the order actually used — an order whose precondition is unmet degrades to newest rather than erroring. textSearch narrows results even when an anchor supplies the ranking vector. With an anchor, a filter with objType \"action\" filters on the anchor's latest action with each result, and include_action returns that action. created_at / updated_at filter the item's own dates in epoch seconds.",
         "requestBody": {
           "required": true,
           "content": {
@@ -288,12 +288,19 @@
                             "items": {
                               "type": "object",
                               "properties": {
+                                "objType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "action"
+                                  ]
+                                },
                                 "op": {
                                   "type": "string",
                                   "enum": [
                                     "eq",
                                     "neq",
                                     "in",
+                                    "not_in",
                                     "contains",
                                     "contains_any",
                                     "gt",
@@ -303,8 +310,7 @@
                                   ]
                                 },
                                 "target": {
-                                  "type": "string",
-                                  "pattern": "^item_state\\.[A-Za-z0-9_]+$"
+                                  "type": "string"
                                 },
                                 "value": {}
                               },
@@ -352,6 +358,39 @@
                               "type",
                               "coordinates"
                             ]
+                          },
+                          "include_action": {
+                            "type": "boolean"
+                          },
+                          "created_at": {
+                            "type": "object",
+                            "properties": {
+                              "gte": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 253402300799
+                              },
+                              "lte": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 253402300799
+                              }
+                            }
+                          },
+                          "updated_at": {
+                            "type": "object",
+                            "properties": {
+                              "gte": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 253402300799
+                              },
+                              "lte": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 253402300799
+                              }
+                            }
                           }
                         }
                       },
@@ -511,6 +550,30 @@
                               },
                               "distanceMeters": {
                                 "type": "number"
+                              },
+                              "action": {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "status": {
+                                    "type": "string"
+                                  },
+                                  "created_at": {
+                                    "type": "string"
+                                  },
+                                  "status_updated_at": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "status",
+                                  "created_at",
+                                  "status_updated_at"
+                                ],
+                                "additionalProperties": false
                               }
                             },
                             "required": [
@@ -918,6 +981,30 @@
                               },
                               "distanceMeters": {
                                 "type": "number"
+                              },
+                              "action": {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string"
+                                  },
+                                  "status": {
+                                    "type": "string"
+                                  },
+                                  "created_at": {
+                                    "type": "string"
+                                  },
+                                  "status_updated_at": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "status",
+                                  "created_at",
+                                  "status_updated_at"
+                                ],
+                                "additionalProperties": false
                               }
                             },
                             "required": [

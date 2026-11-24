@@ -229,3 +229,130 @@ describe('SearchResponseSchema — resolvedLocation', () => {
     expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [], meta, resolvedLocation: bad } }).success).toBe(false);
   });
 });
+
+describe('IntentSchema — include_action', () => {
+  const ANCHOR = '11111111-1111-1111-1111-111111111111';
+  const req = (intent: Record<string, unknown>) => ({ context: valid.context, message: { intent } });
+
+  it('accepts include_action with an anchor', () => {
+    expect(SearchRequestSchema.safeParse(req({ item: { id: ANCHOR }, include_action: true })).success).toBe(true);
+  });
+  it('rejects include_action without an anchor', () => {
+    const r = SearchRequestSchema.safeParse(req({ textSearch: 'x', include_action: true }));
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0].message).toContain('include_action requires intent.item.id');
+  });
+  it('accepts include_action: false without an anchor', () => {
+    expect(SearchRequestSchema.safeParse(req({ textSearch: 'x', include_action: false })).success).toBe(true);
+  });
+  it('rejects a non-boolean include_action', () => {
+    expect(SearchRequestSchema.safeParse(req({ item: { id: ANCHOR }, include_action: 'yes' })).success).toBe(false);
+  });
+});
+
+describe('IntentSchema — action filter clauses', () => {
+  const ANCHOR = '11111111-1111-1111-1111-111111111111';
+  const req = (filter: Record<string, unknown>, anchored = true) => ({
+    context: valid.context,
+    message: { intent: anchored ? { item: { id: ANCHOR }, filters: [filter] } : { textSearch: 'x', filters: [filter] } },
+  });
+  const parse = (filter: Record<string, unknown>, anchored = true) => SearchRequestSchema.safeParse(req(filter, anchored));
+  const action = (op: string, target: string, value: unknown) => ({ objType: 'action', op, target, value });
+
+  it.each([
+    action('neq', 'status_group', 'create'),
+    action('not_in', 'status_group', ['create', 'reject']),
+    action('eq', 'status_group', 'accept'),
+    action('in', 'status_group', ['cancel']),
+    action('eq', 'type', 'apply'),
+    action('in', 'status', ['submitted', 'rejected']),
+    action('gte', 'created_at', 1788220800),
+    action('lte', 'status_updated_at', 0),
+  ])('accepts %o', (f) => {
+    expect(parse(f).success).toBe(true);
+  });
+
+  it('requires an anchor', () => {
+    const r = parse(action('neq', 'status_group', 'create'), false);
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0].message).toContain('an action filter requires intent.item.id');
+  });
+
+  it.each([
+    [action('eq', 'status_group', 'open'), 'unknown status_group open'],
+    [action('eq', 'lifecycle', 'live'), 'action target must be one of'],
+    [action('gt', 'status', 'x'), "op 'gt' is not allowed"],
+    [action('eq', 'created_at', 1788220800), "op 'eq' is not allowed on action target 'created_at'"],
+    [action('gte', 'created_at', 1788220800000), 'whole epoch seconds'],
+    [action('gte', 'created_at', '2026-09-01'), 'whole epoch seconds'],
+    [action('in', 'status', 'submitted'), 'non-empty array of strings'],
+    [action('not_in', 'status_group', []), 'non-empty array of strings'],
+    [action('eq', 'type', ['apply']), 'requires a string value'],
+    [action('eq', 'type', ''), 'requires a string value'],
+  ])('rejects %o', (f, message) => {
+    const r = parse(f);
+    expect(r.success).toBe(false);
+    expect(r.error?.issues.map((i) => i.message).join('|')).toContain(message);
+  });
+
+  it('rejects an objType other than action', () => {
+    expect(parse({ objType: 'item', op: 'eq', target: 'item_state.x', value: 'y' }).success).toBe(false);
+  });
+
+  it('keeps item clauses as before: not_in is rejected and the target must be item_state.<field>', () => {
+    expect(parse({ op: 'eq', target: 'item_state.job_type', value: 'full_time' }).success).toBe(true);
+    expect(parse({ op: 'not_in', target: 'item_state.job_type', value: ['a'] }).error?.issues[0].message)
+      .toContain("op 'not_in' is only allowed on action clauses");
+    expect(parse({ op: 'eq', target: 'status', value: 'x' }).error?.issues[0].message).toContain('target must be item_state.<field>');
+  });
+});
+
+describe('IntentSchema — created_at / updated_at ranges (epoch seconds)', () => {
+  const req = (intent: Record<string, unknown>) => ({ context: valid.context, message: { intent: { textSearch: 'x', ...intent } } });
+
+  it('accepts both bounds, one bound, or either field alone, without an anchor', () => {
+    expect(SearchRequestSchema.safeParse(req({ created_at: { gte: 1793491200, lte: 1795219199 } })).success).toBe(true);
+    expect(SearchRequestSchema.safeParse(req({ updated_at: { gte: 1794700800 } })).success).toBe(true);
+    expect(SearchRequestSchema.safeParse(req({ updated_at: { lte: 0 } })).success).toBe(true);
+  });
+  it('accepts equal bounds', () => {
+    expect(SearchRequestSchema.safeParse(req({ created_at: { gte: 1793491200, lte: 1793491200 } })).success).toBe(true);
+  });
+  it('rejects an ISO 8601 string', () => {
+    expect(SearchRequestSchema.safeParse(req({ created_at: { gte: '2026-11-01T00:00:00Z' } })).success).toBe(false);
+  });
+  it('rejects a fractional or negative value', () => {
+    expect(SearchRequestSchema.safeParse(req({ created_at: { gte: 1793491200.5 } })).success).toBe(false);
+    expect(SearchRequestSchema.safeParse(req({ created_at: { gte: -1 } })).success).toBe(false);
+  });
+  it('rejects a millisecond epoch', () => {
+    expect(SearchRequestSchema.safeParse(req({ created_at: { gte: 1793491200000 } })).success).toBe(false);
+  });
+  it('rejects gte later than lte', () => {
+    const r = SearchRequestSchema.safeParse(req({ updated_at: { gte: 1795219199, lte: 1793491200 } }));
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0].message).toContain('gte must not be later than lte');
+  });
+});
+
+describe('SearchResponseSchema — action', () => {
+  const ctx = valid.context;
+  const meta = { total: 1, limit: 20, offset: 0, sort_applied: 'relevance' };
+  const item = {
+    item_network: 'purple_dot', item_domain: 'provider', item_type: 'profile_1.0', item_id: 'j4',
+    item_state: {}, item_locations: [], item_instance_url: null, item_schema_url: null,
+    created_at: '2026-11-01T00:00:00.000Z', updated_at: '2026-11-01T00:00:00.000Z', created_by: null, lifecycle_status: 'live',
+  };
+  const action = { type: 'apply', status: 'rejected', created_at: '2026-11-10T09:12:00.000Z', status_updated_at: '2026-11-12T15:40:00.000Z' };
+
+  it('accepts a result without an action', () => {
+    expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [item], meta } }).success).toBe(true);
+  });
+  it('accepts a result with an action', () => {
+    expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [{ ...item, action }], meta } }).success).toBe(true);
+  });
+  it('rejects an action missing a field', () => {
+    const { status_updated_at: _, ...partial } = action;
+    expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [{ ...item, action: partial }], meta } }).success).toBe(false);
+  });
+});

@@ -1,0 +1,39 @@
+{
+  "id": "action_rules",
+  "display_name": "Action rules fixture",
+  "domains": [],
+  "actions": {
+    "apply": {
+      "interactions": [
+        {
+          "from_network": "action_rules",
+          "from_domain": "seeker",
+          "to_network": "action_rules",
+          "to_domain": "provider",
+          "metric_categories": {
+            "create": ["created", "submitted"],
+            "accept": ["shortlisted"],
+            "reject": ["not_selected"],
+            "cancel": ["withdrawn"]
+          }
+        }
+      ]
+    },
+    "connect": {
+      "interactions": [
+        {
+          "from_network": "action_rules",
+          "from_domain": "provider",
+          "to_network": "action_rules",
+          "to_domain": "seeker",
+          "metric_categories": {
+            "create": ["invited"],
+            "accept": ["accepted"],
+            "reject": ["declined"],
+            "cancel": ["expired"]
+          }
+        }
+      ]
+    }
+  }
+}

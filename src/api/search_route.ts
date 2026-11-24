@@ -3,7 +3,8 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse, type SortMode } from './schemas.js';
 import { authenticateApiKey } from './auth.js';
-import { searchItems, type FilterClause } from '../db/search_query.js';
+import { searchItems, type ActionFilter, type ActionMatch, type FilterClause } from '../db/search_query.js';
+import type { NetworkRegistry, StatusGroup } from '../config/network_registry.js';
 import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
 import { TeiReranker } from '../rerank/reranker.js';
@@ -13,6 +14,28 @@ import { DEFAULT_RADIUS_BY_PRECISION } from '../config.js';
 type ResolvedLocation = NonNullable<SearchResponse['message']['resolvedLocation']>;
 
 // Re-exported from the wire schema so accepted and reported values cannot drift.
+type ActionClause = { op: string; target: string; value: unknown };
+
+function toActionFilter(registry: NetworkRegistry, network: string, f: ActionClause): ActionFilter {
+  if (f.target === 'created_at' || f.target === 'status_updated_at') {
+    const field = f.target === 'created_at' ? 'created_at' : 'updated_at';
+    const bound = f.op === 'gte' ? { gte: f.value as number } : { lte: f.value as number };
+    return { exclude: false, anyOf: [{ field, range: bound }] };
+  }
+  const values = (Array.isArray(f.value) ? f.value : [f.value]) as string[];
+  const exclude = f.op === 'neq' || f.op === 'not_in';
+  let anyOf: ActionMatch[];
+  if (f.target === 'status_group') {
+    anyOf = values.map((g) => {
+      const set = registry.statusGroup(network, g as StatusGroup);
+      return { field: 'action_status', values: set.statuses, negate: set.negate };
+    });
+  } else {
+    anyOf = [{ field: f.target === 'type' ? 'action_type' : 'action_status', values, negate: false }];
+  }
+  return { exclude, anyOf };
+}
+
 export type { SortMode } from './schemas.js';
 
 /**
@@ -118,7 +141,26 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
   const pagination = message.pagination;
   const normalized = { networkId, domain, itemType, intent: message.intent, pagination };
   const key = cacheKey(normalized);
-  const cached = await getCached<SearchResponse>(deps.redis, key);
+  const allFilters = message.intent.filters ?? [];
+  const actionClauses = allFilters.filter((f) => f.objType === 'action');
+  const knownTypes = deps.registry.actionTypes(networkId);
+  const unknownType = actionClauses
+    .filter((f) => f.target === 'type')
+    .flatMap((f) => (Array.isArray(f.value) ? f.value : [f.value]) as string[])
+    .find((t) => !knownTypes.includes(t));
+  if (unknownType !== undefined) {
+    return reply.code(400).send({
+      error: 'VALIDATION_ERROR',
+      message: `unknown action type '${unknownType}' for network ${networkId}; use ${knownTypes.join(', ')}`,
+    });
+  }
+  const includeAction = message.intent.include_action === true;
+  const anchorId = message.intent.item?.id;
+  const action = anchorId && (actionClauses.length > 0 || includeAction)
+    ? { anchorId, include: includeAction, filters: actionClauses.map((f) => toActionFilter(deps.registry, networkId, f)) }
+    : undefined;
+  const cacheable = action === undefined;
+  const cached = cacheable ? await getCached<SearchResponse>(deps.redis, key) : null;
   if (cached) return reply.code(200).send(cached);
 
   // Without an anchor, the text is embedded as the query vector; with one, the
@@ -227,7 +269,10 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
           textSearchFields: deps.registry.vectorizeFields(networkId, domain, itemType).map((f) => f.path),
         }
       : {}),
-    filters: (message.intent.filters ?? []) as FilterClause[],
+    filters: allFilters.filter((f) => f.objType !== 'action') as FilterClause[],
+    createdAt: message.intent.created_at,
+    updatedAt: message.intent.updated_at,
+    action,
     limit: willRerank ? topN : pagination.limit,
     offset: willRerank ? 0 : pagination.offset,
   });
@@ -255,12 +300,13 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
         created_at: r.created_at, updated_at: r.updated_at, created_by: r.created_by, lifecycle_status: r.lifecycle_status,
         ...(r.score != null ? { score: Number(r.score.toFixed(4)) } : {}),
         ...(r.distanceMeters != null ? { distanceMeters: Math.round(r.distanceMeters) } : {}),
+        ...(r.action ? { action: r.action } : {}),
       })),
       meta: { total, limit: pagination.limit, offset: pagination.offset, sort_applied: sortApplied },
       ...(resolvedLocation ? { resolvedLocation } : {}),
     },
   };
-  await setCached(deps.redis, key, response, deps.cacheTtlSeconds);
+  if (cacheable) await setCached(deps.redis, key, response, deps.cacheTtlSeconds);
   return reply.code(200).send(response);
 }
 
@@ -296,7 +342,10 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
         'FILTERS (s_dwithin); `intent.orderingCenter` only ORDERS and never filters. ' +
         '`meta.sort_applied` always reports the order actually used — an order whose ' +
         'precondition is unmet degrades to newest rather than erroring. textSearch ' +
-        'narrows results even when an anchor supplies the ranking vector.',
+        'narrows results even when an anchor supplies the ranking vector. With an anchor, ' +
+        'a filter with objType "action" filters on the anchor\'s latest action with each ' +
+        'result, and include_action returns that action. created_at / updated_at filter ' +
+        'the item\'s own dates in epoch seconds.',
       security: [{ apiKeyAuth: [] }],
       body: SearchRequestSchema,
       response: SEARCH_RESPONSES,

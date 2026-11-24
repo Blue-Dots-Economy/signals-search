@@ -2,9 +2,37 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolveVectorizeFields, type VectorizeField, type ItemSchema } from './vectorize_fields.js';
 
-type Interaction = { from_network: string; from_domain: string; to_network: string; to_domain: string };
+type MetricBucket = 'create' | 'accept' | 'reject' | 'cancel';
+type Interaction = {
+  from_network: string; from_domain: string; to_network: string; to_domain: string;
+  metric_categories?: Partial<Record<MetricBucket, string[]>> | null;
+};
 type Domain = { id: string; item_schemas?: Record<string, ItemSchema> };
-type NetworkConfig = { id: string; domains?: Domain[]; actions?: Record<string, { interactions?: Interaction[] }> };
+type NetworkConfig = {
+  id: string;
+  domains?: Domain[];
+  actions?: Record<string, { interactions?: Interaction[] }>;
+};
+
+export type StatusGroup = MetricBucket;
+export type StatusSet = { statuses: string[]; negate: boolean };
+
+const FALLBACK_CLOSED_STATUSES = ['accepted', 'completed', 'cancelled', 'rejected', 'declined', 'withdrawn'];
+const CLOSED_BUCKETS: MetricBucket[] = ['accept', 'reject', 'cancel'];
+
+function interactionsOf(cfg: NetworkConfig | undefined): Interaction[] {
+  return Object.values(cfg?.actions ?? {}).flatMap((a) => a.interactions ?? []);
+}
+
+function bucketStatuses(cfg: NetworkConfig | undefined, buckets: MetricBucket[]): Set<string> {
+  const out = new Set<string>();
+  for (const it of interactionsOf(cfg)) {
+    for (const bucket of buckets) {
+      for (const status of it.metric_categories?.[bucket] ?? []) out.add(status);
+    }
+  }
+  return out;
+}
 
 export type NetworkRegistry = {
   hasDomain(network: string, domain: string): boolean;
@@ -19,6 +47,8 @@ export type NetworkRegistry = {
     toNetwork: string,
     toDomain: string,
   ): boolean;
+  actionTypes(network: string): string[];
+  statusGroup(network: string, group: StatusGroup): StatusSet;
 };
 
 async function readConfigs(path: string): Promise<NetworkConfig[]> {
@@ -60,6 +90,16 @@ export async function loadNetworkRegistry(path: string): Promise<NetworkRegistry
         }
       }
       return false;
+    },
+    actionTypes: (n) => Object.keys(byId.get(n)?.actions ?? {}),
+    statusGroup(n, group) {
+      const cfg = byId.get(n);
+      if (group === 'create') {
+        const closed = bucketStatuses(cfg, CLOSED_BUCKETS);
+        for (const s of FALLBACK_CLOSED_STATUSES) closed.add(s);
+        return { statuses: [...closed], negate: true };
+      }
+      return { statuses: [...bucketStatuses(cfg, [group])], negate: false };
     },
   };
 }
