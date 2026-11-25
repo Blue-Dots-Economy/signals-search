@@ -563,7 +563,7 @@
                                   "created_at": {
                                     "type": "string"
                                   },
-                                  "status_updated_at": {
+                                  "updated_at": {
                                     "type": "string"
                                   }
                                 },
@@ -571,7 +571,7 @@
                                   "type",
                                   "status",
                                   "created_at",
-                                  "status_updated_at"
+                                  "updated_at"
                                 ],
                                 "additionalProperties": false
                               }
@@ -994,7 +994,7 @@
                                   "created_at": {
                                     "type": "string"
                                   },
-                                  "status_updated_at": {
+                                  "updated_at": {
                                     "type": "string"
                                   }
                                 },
@@ -1002,7 +1002,7 @@
                                   "type",
                                   "status",
                                   "created_at",
-                                  "status_updated_at"
+                                  "updated_at"
                                 ],
                                 "additionalProperties": false
                               }

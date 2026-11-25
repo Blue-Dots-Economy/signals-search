@@ -10,7 +10,7 @@ export type ActionMatch =
   | { field: 'created_at' | 'updated_at'; range: DateRange };
 export type ActionFilter = { exclude: boolean; anyOf: ActionMatch[] };
 export type ActionParams = { anchorId: string; filters: ActionFilter[]; include: boolean };
-export type ItemAction = { type: string; status: string; created_at: string; status_updated_at: string };
+export type ItemAction = { type: string; status: string; created_at: string; updated_at: string };
 
 export type SearchParams = {
   item_network: string;
@@ -341,7 +341,7 @@ export async function searchItems(sql: Sql, p: SearchParams): Promise<{ rows: Se
           type: r.action_type,
           status: r.action_status,
           created_at: r.action_created_at.toISOString(),
-          status_updated_at: r.action_updated_at.toISOString(),
+          updated_at: r.action_updated_at.toISOString(),
         }
       : undefined,
   }));

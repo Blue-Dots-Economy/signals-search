@@ -173,7 +173,7 @@ describe('POST /v1/search — action filters, include_action and date ranges', (
     expect(res.statusCode).toBe(200);
     const [item] = res.json().message.items;
     expect(item.action).toEqual({
-      type: 'apply', status: 'submitted', created_at: '2026-11-10T09:12:00.000Z', status_updated_at: '2026-11-12T15:40:00.000Z',
+      type: 'apply', status: 'submitted', created_at: '2026-11-10T09:12:00.000Z', updated_at: '2026-11-12T15:40:00.000Z',
     });
     expect(res.body).not.toContain('private note');
     expect(res.body).not.toContain('9999999999');

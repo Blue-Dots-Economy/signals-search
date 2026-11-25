@@ -20,7 +20,7 @@ Filter clauses target `item_state.<field>` and support these operators: `eq`, `n
 
 ### Action filters and the latest action
 
-With an anchor (`intent.item.id`), a filter clause with `"objType": "action"` filters on the anchor's **latest action** with each result, in either direction and of any type. Targets: `type`, `status` and `status_group` (`create`, `accept`, `reject`, `cancel`, from `metric_categories` in `network.json`; `create` is every status that is not closed) with `eq`, `neq`, `in`, `not_in`; and `created_at`, `status_updated_at` with `gte`, `lte` in epoch seconds. A result with no action never matches: `neq`/`not_in` keep it, the other operators drop it. `"include_action": true` adds the latest action (`type`, `status`, `created_at`, `status_updated_at`) to each result that has one. Requests using either skip the result cache.
+With an anchor (`intent.item.id`), a filter clause with `"objType": "action"` filters on the anchor's **latest action** with each result, in either direction and of any type. Targets: `type`, `status` and `status_group` (`create`, `accept`, `reject`, `cancel`, from `metric_categories` in `network.json`; `create` is every status that is not closed) with `eq`, `neq`, `in`, `not_in`; and `created_at`, `updated_at` with `gte`, `lte` in epoch seconds. A result with no action never matches: `neq`/`not_in` keep it, the other operators drop it. `"include_action": true` adds the latest action (`type`, `status`, `created_at`, `updated_at`) to each result that has one. Requests using either skip the result cache.
 
 ```json
 { "objType": "action", "op": "neq", "target": "status_group", "value": "create" }

@@ -13,14 +13,12 @@ import { DEFAULT_RADIUS_BY_PRECISION } from '../config.js';
 
 type ResolvedLocation = NonNullable<SearchResponse['message']['resolvedLocation']>;
 
-// Re-exported from the wire schema so accepted and reported values cannot drift.
 type ActionClause = { op: string; target: string; value: unknown };
 
 function toActionFilter(registry: NetworkRegistry, network: string, f: ActionClause): ActionFilter {
-  if (f.target === 'created_at' || f.target === 'status_updated_at') {
-    const field = f.target === 'created_at' ? 'created_at' : 'updated_at';
+  if (f.target === 'created_at' || f.target === 'updated_at') {
     const bound = f.op === 'gte' ? { gte: f.value as number } : { lte: f.value as number };
-    return { exclude: false, anyOf: [{ field, range: bound }] };
+    return { exclude: false, anyOf: [{ field: f.target, range: bound }] };
   }
   const values = (Array.isArray(f.value) ? f.value : [f.value]) as string[];
   const exclude = f.op === 'neq' || f.op === 'not_in';
@@ -36,6 +34,7 @@ function toActionFilter(registry: NetworkRegistry, network: string, f: ActionCla
   return { exclude, anyOf };
 }
 
+// Re-exported from the wire schema so accepted and reported values cannot drift.
 export type { SortMode } from './schemas.js';
 
 /**

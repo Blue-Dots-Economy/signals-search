@@ -241,6 +241,36 @@ describe('POST /v1/search/flat — action filters, include_action and date range
     expect(ids(res)).not.toContain(A);
   });
 
+  it('treats action values that look like JSON as strings, like the nested route', async () => {
+    await sql`DELETE FROM item_actions`;
+    await sql`INSERT INTO item_actions (partition_network,action_type,action_status,source_item_id,target_item_id)
+      VALUES (${ctx.networkId},'apply','1',${S1},${A})`;
+    const res = await post('/v1/search/flat', {
+      ...flatCtx,
+      'message.intent.item.id': S1,
+      'message.intent.filters.0.objType': 'action',
+      'message.intent.filters.0.op': 'in',
+      'message.intent.filters.0.target': 'status',
+      'message.intent.filters.0.value.0': '1',
+      'message.intent.filters.0.value.1': 'true',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ids(res)).toEqual([A]);
+  });
+
+  it('400 when an action value is sent as "null"', async () => {
+    const res = await post('/v1/search/flat', {
+      ...flatCtx,
+      'message.intent.item.id': S1,
+      'message.intent.filters.0.objType': 'action',
+      'message.intent.filters.0.op': 'eq',
+      'message.intent.filters.0.target': 'status',
+      'message.intent.filters.0.value': 'null',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain('requires a string value');
+  });
+
   it('accepts an action date bound sent as a string', async () => {
     const res = await post('/v1/search/flat', {
       ...flatCtx,

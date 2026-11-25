@@ -56,12 +56,21 @@ const EpochSecondsSchema = z.number().int().min(0).max(MAX_EPOCH_SECONDS);
 export const STATUS_GROUPS = ['create', 'accept', 'reject', 'cancel'] as const;
 
 const ACTION_MATCH_TARGETS = new Set(['type', 'status', 'status_group']);
-const ACTION_DATE_TARGETS = new Set(['created_at', 'status_updated_at']);
+const ACTION_DATE_TARGETS = new Set(['created_at', 'updated_at']);
 const ACTION_MATCH_OPS = new Set(['eq', 'neq', 'in', 'not_in']);
 const ACTION_DATE_OPS = new Set(['gte', 'lte']);
 const STATUS_GROUP_SET: ReadonlySet<string> = new Set(STATUS_GROUPS);
 
 const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+const toText = (v: unknown): unknown => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : v);
+
+function coerceActionValues(clause: unknown): unknown {
+  if (typeof clause !== 'object' || clause === null) return clause;
+  const f = clause as { objType?: unknown; target?: unknown; value?: unknown };
+  if (f.objType !== 'action' || typeof f.target !== 'string' || !ACTION_MATCH_TARGETS.has(f.target)) return clause;
+  return { ...f, value: Array.isArray(f.value) ? f.value.map(toText) : toText(f.value) };
+}
 
 function checkActionClause(f: { op: string; target: string; value: unknown }, ctx: z.RefinementCtx): void {
   if (ACTION_DATE_TARGETS.has(f.target)) {
@@ -102,7 +111,7 @@ function checkActionClause(f: { op: string; target: string; value: unknown }, ct
   }
 }
 
-const FilterClauseSchema = z.object({
+const FilterClauseSchema = z.preprocess(coerceActionValues, z.object({
   objType: z.literal('action').optional(),
   op: z.enum(['eq', 'neq', 'in', 'not_in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
   target: z.string(),
@@ -127,7 +136,7 @@ const FilterClauseSchema = z.object({
   if (f.op === 'in' && !Array.isArray(f.value)) {
     ctx.addIssue({ code: 'custom', message: `op 'in' requires an array value`, path: ['value'] });
   }
-});
+}));
 
 // Absent selects the inferred ordering (see resolveSort in search_route.ts).
 export const SortModeSchema = z.enum(['relevance', 'newest', 'nearest']);
@@ -255,7 +264,7 @@ export const ItemActionSchema = z.object({
   type: z.string(),
   status: z.string(),
   created_at: z.string(),
-  status_updated_at: z.string(),
+  updated_at: z.string(),
 });
 
 export const ItemResultSchema = z.object({

@@ -267,7 +267,7 @@ describe('IntentSchema — action filter clauses', () => {
     action('eq', 'type', 'apply'),
     action('in', 'status', ['submitted', 'rejected']),
     action('gte', 'created_at', 1788220800),
-    action('lte', 'status_updated_at', 0),
+    action('lte', 'updated_at', 0),
   ])('accepts %o', (f) => {
     expect(parse(f).success).toBe(true);
   });
@@ -293,6 +293,17 @@ describe('IntentSchema — action filter clauses', () => {
     const r = parse(f);
     expect(r.success).toBe(false);
     expect(r.error?.issues.map((i) => i.message).join('|')).toContain(message);
+  });
+
+  it('turns number and boolean action values into strings', () => {
+    const r = SearchRequestSchema.parse(req(action('in', 'status', [1, true, 'submitted'])));
+    expect(r.message.intent.filters?.[0].value).toEqual(['1', 'true', 'submitted']);
+  });
+
+  it('rejects a null action value', () => {
+    const r = parse(action('eq', 'status', null));
+    expect(r.success).toBe(false);
+    expect(r.error?.issues.map((i) => i.message).join('|')).toContain('requires a string value');
   });
 
   it('rejects an objType other than action', () => {
@@ -343,7 +354,7 @@ describe('SearchResponseSchema — action', () => {
     item_state: {}, item_locations: [], item_instance_url: null, item_schema_url: null,
     created_at: '2026-11-01T00:00:00.000Z', updated_at: '2026-11-01T00:00:00.000Z', created_by: null, lifecycle_status: 'live',
   };
-  const action = { type: 'apply', status: 'rejected', created_at: '2026-11-10T09:12:00.000Z', status_updated_at: '2026-11-12T15:40:00.000Z' };
+  const action = { type: 'apply', status: 'rejected', created_at: '2026-11-10T09:12:00.000Z', updated_at: '2026-11-12T15:40:00.000Z' };
 
   it('accepts a result without an action', () => {
     expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [item], meta } }).success).toBe(true);
@@ -352,7 +363,7 @@ describe('SearchResponseSchema — action', () => {
     expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [{ ...item, action }], meta } }).success).toBe(true);
   });
   it('rejects an action missing a field', () => {
-    const { status_updated_at: _, ...partial } = action;
+    const { updated_at: _, ...partial } = action;
     expect(SearchResponseSchema.safeParse({ context: ctx, message: { items: [{ ...item, action: partial }], meta } }).success).toBe(false);
   });
 });

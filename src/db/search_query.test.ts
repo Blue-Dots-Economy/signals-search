@@ -462,10 +462,10 @@ describe('searchItems — the anchor\'s latest action', () => {
     const { rows } = await run([], {}, true);
     const byId = Object.fromEntries(rows.map((r) => [r.item_id, r.action]));
     expect(rows).toHaveLength(6);
-    expect(byId[J(2)]).toEqual({ type: 'apply', status: 'submitted', created_at: '2026-11-18T00:00:00.000Z', status_updated_at: '2026-11-18T00:00:00.000Z' });
+    expect(byId[J(2)]).toEqual({ type: 'apply', status: 'submitted', created_at: '2026-11-18T00:00:00.000Z', updated_at: '2026-11-18T00:00:00.000Z' });
     expect(byId[J(5)]).toMatchObject({ type: 'connect', status: 'invited' });
     expect(byId[J(6)]).toMatchObject({ type: 'apply', status: 'submitted', created_at: '2026-11-01T00:00:00.000Z' });
-    expect(byId[J(4)]).toEqual({ type: 'apply', status: 'not_selected', created_at: '2026-09-05T00:00:00.000Z', status_updated_at: '2026-09-25T00:00:00.000Z' });
+    expect(byId[J(4)]).toEqual({ type: 'apply', status: 'not_selected', created_at: '2026-09-05T00:00:00.000Z', updated_at: '2026-09-25T00:00:00.000Z' });
     expect(byId[J(1)]).toBeUndefined();
     expect(byId[J(3)]).toBeUndefined();
 
