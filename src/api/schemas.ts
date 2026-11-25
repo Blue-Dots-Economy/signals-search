@@ -49,11 +49,84 @@ const BboxClauseSchema = z.object({
 // With `.max(1)` on the array below, a radius and a bbox are mutually exclusive.
 const SpatialClauseSchema = z.discriminatedUnion('op', [DwithinClauseSchema, BboxClauseSchema]);
 
-const FilterClauseSchema = z.object({
-  op: z.enum(['eq', 'neq', 'in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
-  target: z.string().regex(/^item_state\.[A-Za-z0-9_]+$/, 'target must be item_state.<field>'),
+const MAX_EPOCH_SECONDS = 253402300799;
+
+const EpochSecondsSchema = z.number().int().min(0).max(MAX_EPOCH_SECONDS);
+
+export const STATUS_GROUPS = ['create', 'accept', 'reject', 'cancel'] as const;
+
+const ACTION_MATCH_TARGETS = new Set(['type', 'status', 'status_group']);
+const ACTION_DATE_TARGETS = new Set(['created_at', 'updated_at']);
+const ACTION_MATCH_OPS = new Set(['eq', 'neq', 'in', 'not_in']);
+const ACTION_DATE_OPS = new Set(['gte', 'lte']);
+const STATUS_GROUP_SET: ReadonlySet<string> = new Set(STATUS_GROUPS);
+
+const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+const toText = (v: unknown): unknown => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : v);
+
+function coerceActionValues(clause: unknown): unknown {
+  if (typeof clause !== 'object' || clause === null) return clause;
+  const f = clause as { objType?: unknown; target?: unknown; value?: unknown };
+  if (f.objType !== 'action' || typeof f.target !== 'string' || !ACTION_MATCH_TARGETS.has(f.target)) return clause;
+  return { ...f, value: Array.isArray(f.value) ? f.value.map(toText) : toText(f.value) };
+}
+
+function checkActionClause(f: { op: string; target: string; value: unknown }, ctx: z.RefinementCtx): void {
+  if (ACTION_DATE_TARGETS.has(f.target)) {
+    if (!ACTION_DATE_OPS.has(f.op)) {
+      ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}' (use gte or lte)`, path: ['op'] });
+    } else if (!EpochSecondsSchema.safeParse(f.value).success) {
+      ctx.addIssue({ code: 'custom', message: `action target '${f.target}' requires whole epoch seconds`, path: ['value'] });
+    }
+    return;
+  }
+  if (!ACTION_MATCH_TARGETS.has(f.target)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `action target must be one of ${[...ACTION_MATCH_TARGETS, ...ACTION_DATE_TARGETS].join(', ')}`,
+      path: ['target'],
+    });
+    return;
+  }
+  if (!ACTION_MATCH_OPS.has(f.op)) {
+    ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}'`, path: ['op'] });
+    return;
+  }
+  const isList = f.op === 'in' || f.op === 'not_in';
+  const values = isList ? f.value : [f.value];
+  if (!Array.isArray(values) || values.length === 0 || !values.every(isNonEmptyString)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: isList ? `op '${f.op}' requires a non-empty array of strings` : `op '${f.op}' requires a string value`,
+      path: ['value'],
+    });
+    return;
+  }
+  if (f.target === 'status_group') {
+    const unknown = values.filter((v) => !STATUS_GROUP_SET.has(v));
+    if (unknown.length > 0) {
+      ctx.addIssue({ code: 'custom', message: `unknown status_group ${unknown.join(', ')}; use ${STATUS_GROUPS.join(', ')}`, path: ['value'] });
+    }
+  }
+}
+
+const FilterClauseSchema = z.preprocess(coerceActionValues, z.object({
+  objType: z.literal('action').optional(),
+  op: z.enum(['eq', 'neq', 'in', 'not_in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
+  target: z.string(),
   value: z.unknown(),
 }).superRefine((f, ctx) => {
+  if (f.objType === 'action') {
+    checkActionClause(f, ctx);
+    return;
+  }
+  if (!/^item_state\.\w+$/.test(f.target)) {
+    ctx.addIssue({ code: 'custom', message: 'target must be item_state.<field>', path: ['target'] });
+  }
+  if (f.op === 'not_in') {
+    ctx.addIssue({ code: 'custom', message: `op 'not_in' is only allowed on action clauses`, path: ['op'] });
+  }
   // Numeric comparators must carry a finite number; otherwise Number(value) in the
   // query builder yields NaN and silently matches nothing.
   if (['gt', 'gte', 'lt', 'lte'].includes(f.op) && (typeof f.value !== 'number' || !Number.isFinite(f.value))) {
@@ -63,7 +136,7 @@ const FilterClauseSchema = z.object({
   if (f.op === 'in' && !Array.isArray(f.value)) {
     ctx.addIssue({ code: 'custom', message: `op 'in' requires an array value`, path: ['value'] });
   }
-});
+}));
 
 // Absent selects the inferred ordering (see resolveSort in search_route.ts).
 export const SortModeSchema = z.enum(['relevance', 'newest', 'nearest']);
@@ -75,7 +148,14 @@ const OrderingCenterSchema = z.object({
   coordinates: z.tuple([z.number(), z.number()]), // GeoJSON order: [lng, lat]
 });
 
-export const IntentSchema = z.object({
+const DateRangeSchema = z.object({
+  gte: EpochSecondsSchema.optional(),
+  lte: EpochSecondsSchema.optional(),
+}).refine((r) => r.gte === undefined || r.lte === undefined || r.gte <= r.lte, {
+  message: 'gte must not be later than lte',
+});
+
+const IntentFieldsSchema = z.object({
   textSearch: z.string().min(1).optional(),
   // z.guid(), not z.uuid(): zod 4's .uuid() enforces RFC 9562 version/variant
   // nibbles and would reject accepted ids like '1111...-1111'. Tightening this
@@ -90,7 +170,25 @@ export const IntentSchema = z.object({
   // elsewhere, requests differing only in `sort` would share a cache entry.
   sort: SortModeSchema.optional(),
   orderingCenter: OrderingCenterSchema.optional(),
-}).superRefine((intent, ctx) => {
+  include_action: z.boolean().optional(),
+  created_at: DateRangeSchema.optional(),
+  updated_at: DateRangeSchema.optional(),
+});
+
+type IntentFields = z.infer<typeof IntentFieldsSchema>;
+
+function checkActionAnchor(intent: IntentFields, ctx: z.RefinementCtx): void {
+  if (!intent.item?.id) {
+    if (intent.include_action) {
+      ctx.addIssue({ code: 'custom', message: 'include_action requires intent.item.id', path: ['include_action'] });
+    }
+    if (intent.filters?.some((f) => f.objType === 'action')) {
+      ctx.addIssue({ code: 'custom', message: 'an action filter requires intent.item.id', path: ['filters'] });
+    }
+  }
+}
+
+function checkAnchorlessSpatial(intent: IntentFields, ctx: z.RefinementCtx): void {
   // An s_dwithin clause with neither geometry nor address takes its centre from
   // the anchor, so it requires item.id. A bbox carries its own bounds.
   const hasAnchorlessSpatial = (intent.spatial ?? []).some(
@@ -103,7 +201,9 @@ export const IntentSchema = z.object({
       path: ['spatial'],
     });
   }
+}
 
+function checkAddressClauses(intent: IntentFields, ctx: z.RefinementCtx): void {
   for (const s of intent.spatial ?? []) {
     if (s.op !== 's_dwithin' || !s.address) continue;
     if (s.geometry) {
@@ -113,7 +213,9 @@ export const IntentSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'address cannot be combined with intent.item.id', path: ['spatial'] });
     }
   }
+}
 
+function checkBboxClauses(intent: IntentFields, ctx: z.RefinementCtx): void {
   // Misordered bounds are rejected, not swapped: swapping would search an area
   // the caller did not ask for. minLng > maxLng is an antimeridian-crossing
   // viewport, which is unsupported and would otherwise return an empty page.
@@ -134,6 +236,13 @@ export const IntentSchema = z.object({
       });
     }
   }
+}
+
+export const IntentSchema = IntentFieldsSchema.superRefine((intent, ctx) => {
+  checkActionAnchor(intent, ctx);
+  checkAnchorlessSpatial(intent, ctx);
+  checkAddressClauses(intent, ctx);
+  checkBboxClauses(intent, ctx);
 });
 
 export const PaginationSchema = z.object({
@@ -151,6 +260,13 @@ export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 // against SearchRequestSchema after unflattening.
 export const FlatSearchRequestSchema = z.record(z.string(), z.unknown());
 
+export const ItemActionSchema = z.object({
+  type: z.string(),
+  status: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
 export const ItemResultSchema = z.object({
   item_network: z.string(),
   item_domain: z.string(),
@@ -166,6 +282,7 @@ export const ItemResultSchema = z.object({
   lifecycle_status: z.string(),
   score: z.number().optional(),
   distanceMeters: z.number().optional(),
+  action: ItemActionSchema.optional(),
 });
 
 export const SearchResponseSchema = z.object({
