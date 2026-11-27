@@ -9,7 +9,7 @@ import { buildServer, type ApiDeps } from '../src/api/server.js';
 const deps = {
   sql: {} as ApiDeps['sql'],
   redis: {} as ApiDeps['redis'],
-  embedder: { embed: async () => [] },
+  embedder: { embed: () => Promise.resolve([]) },
   registry: {} as ApiDeps['registry'],
   rerank: { model: 'r', defaultOn: false, topN: 50 },
   cacheTtlSeconds: 0,
