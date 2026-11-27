@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createHash } from 'node:crypto';
-import { startPostgres, sqlClient } from '../../test/support/pg.js';
+import { startPostgres, sqlClient, createItemActionsTable } from '../../test/support/pg.js';
 import { runMigrations } from '../db/migrate.js';
 import { ItemSearchRepo } from '../db/item_search_repo.js';
 import { loadNetworkRegistry } from '../config/network_registry.js';
@@ -25,7 +25,8 @@ beforeAll(async () => {
   await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES (${base.item_network},${base.item_domain},${base.item_type},${A},'{"provider_category":"NGO / Trust","service_details":"speech therapy","trade":"plumber","pincode":"560001"}','[{"lat":12.93,"lng":77.62}]')`;
   await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,item_state,item_locations) VALUES
     (${seekerBase.item_network},${seekerBase.item_domain},${seekerBase.item_type},${S1},'{"needs":"speech therapy"}','[{"lat":12.93,"lng":77.62}]')`;
-  await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, user_id text, enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
+  await createItemActionsTable(sql);
+  await sql`CREATE TABLE "apikey" (id text PRIMARY KEY, key text NOT NULL, reference_id text, user_id text, enabled boolean NOT NULL DEFAULT true, expires_at timestamp, remaining integer)`;
   await sql`INSERT INTO "apikey" (id,key,user_id,enabled) VALUES ('k1', ${createHash('sha256').update(RAW).digest('base64url')}, 'usr_1', true)`;
   const repo = new ItemSearchRepo(sql, N);
   const v = Array.from({ length: N }, () => 0); v[0] = 1;
@@ -211,5 +212,96 @@ describe('POST /v1/search/flat', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('POST /v1/search/flat — action filters, include_action and date ranges', () => {
+  const flatCtx = {
+    'context.messageId': 'm-flags',
+    'context.networkId': ctx.networkId,
+    'context.domain': ctx.domain,
+    'context.itemType': ctx.itemType,
+  };
+  const ids = (res: { json: () => { message: { items: { item_id: string }[] } } }) => res.json().message.items.map((i) => i.item_id);
+
+  it('applies an action clause sent as flat keys, including a list value', async () => {
+    await sql`DELETE FROM item_actions`;
+    await sql`INSERT INTO item_actions (partition_network,action_type,action_status,source_item_id,target_item_id)
+      VALUES (${ctx.networkId},'apply','submitted',${S1},${A})`;
+    const res = await post('/v1/search/flat', {
+      ...flatCtx,
+      'message.intent.item.id': S1,
+      'message.intent.filters.0.objType': 'action',
+      'message.intent.filters.0.op': 'not_in',
+      'message.intent.filters.0.target': 'status_group',
+      'message.intent.filters.0.value.0': 'create',
+      'message.intent.filters.0.value.1': 'reject',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ids(res)).not.toContain(A);
+  });
+
+  it('treats action values that look like JSON as strings, like the nested route', async () => {
+    await sql`DELETE FROM item_actions`;
+    await sql`INSERT INTO item_actions (partition_network,action_type,action_status,source_item_id,target_item_id)
+      VALUES (${ctx.networkId},'apply','1',${S1},${A})`;
+    const res = await post('/v1/search/flat', {
+      ...flatCtx,
+      'message.intent.item.id': S1,
+      'message.intent.filters.0.objType': 'action',
+      'message.intent.filters.0.op': 'in',
+      'message.intent.filters.0.target': 'status',
+      'message.intent.filters.0.value.0': '1',
+      'message.intent.filters.0.value.1': 'true',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ids(res)).toEqual([A]);
+  });
+
+  it('400 when an action value is sent as "null"', async () => {
+    const res = await post('/v1/search/flat', {
+      ...flatCtx,
+      'message.intent.item.id': S1,
+      'message.intent.filters.0.objType': 'action',
+      'message.intent.filters.0.op': 'eq',
+      'message.intent.filters.0.target': 'status',
+      'message.intent.filters.0.value': 'null',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain('requires a string value');
+  });
+
+  it('accepts an action date bound sent as a string', async () => {
+    const res = await post('/v1/search/flat', {
+      ...flatCtx,
+      'message.intent.item.id': S1,
+      'message.intent.filters.0.objType': 'action',
+      'message.intent.filters.0.op': 'gte',
+      'message.intent.filters.0.target': 'created_at',
+      'message.intent.filters.0.value': '1577836800',
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('accepts include_action sent as the string "true"', async () => {
+    const res = await post('/v1/search/flat', { ...flatCtx, 'message.intent.item.id': S1, 'message.intent.include_action': 'true' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('400 when include_action is sent without an anchor', async () => {
+    const res = await post('/v1/search/flat', { ...flatCtx, 'message.intent.textSearch': 'speech therapy', 'message.intent.include_action': 'true' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain('include_action requires intent.item.id');
+  });
+
+  it('accepts epoch-second date bounds sent as flat string keys', async () => {
+    const res = await post('/v1/search/flat', {
+      ...flatCtx,
+      'message.intent.item.id': S1,
+      'message.intent.created_at.gte': '1577836800',
+      'message.intent.updated_at.lte': '4070908800',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(ids(res)).toContain(A);
   });
 });

@@ -9,25 +9,35 @@ export const ContextSchema = z.object({
   itemType: z.string().min(1),
 });
 
+export const PlacePrecisionSchema = z.enum(['postal_code', 'locality', 'city', 'district']);
+export type PlacePrecision = z.infer<typeof PlacePrecisionSchema>;
+
+// The point a text address resolved to, echoed so a caller can show what was searched.
+export const ResolvedLocationSchema = z.object({
+  input: z.string(),
+  label: z.string(),
+  point: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }),
+  precision: PlacePrecisionSchema,
+  radiusMeters: z.number(),
+});
+
 const DwithinClauseSchema = z.object({
   op: z.literal('s_dwithin'),
-  // Optional: when omitted, the search center is taken from the anchor item
-  // (`intent.item.id`) — "search near this profile's own location". When
-  // present, the explicit point is used and the profile's location is ignored.
+  // When neither geometry nor address is given, the centre is the anchor item's stored location.
   geometry: z.object({ type: z.literal('Point'), coordinates: z.tuple([z.number(), z.number()]) }).optional(),
-  // Optional: falls back to SEARCH_DEFAULT_DISTANCE_METERS when omitted.
+  // A text place name resolved to a centre; mutually exclusive with geometry and the anchor.
+  // A number is accepted and turned into a string: the flat route JSON-parses
+  // leaves, so a pincode like "580001" arrives as 580001.
+  address: z
+    .preprocess((v) => (typeof v === 'number' ? String(v) : v), z.string().trim().min(1).max(200))
+    .optional(),
+  // Defaults to SEARCH_DEFAULT_DISTANCE_METERS.
   distanceMeters: z.number().positive().optional(),
 });
 
-// A rectangular viewport filter (#644 "search this area"). Exists because a map
-// viewport IS a rectangle, and approximating one with its circumscribed circle
-// always covers more ground than the map showed — so the list would include
-// items the user could not see, which is why the viewport area mode was
-// originally dropped from the spec (D6).
-//
-// All four bounds are REQUIRED: a partial box has no sensible meaning, and
-// defaulting the missing side would silently search somewhere the caller did
-// not ask for. Ordering is validated in IntentSchema's refine below.
+// Viewport filter ("search this area"); a circle around the viewport would
+// return items the map does not show. All four bounds are required so a missing
+// side is never silently defaulted. Bound order is checked in IntentSchema.
 const BboxClauseSchema = z.object({
   op: z.literal('bbox'),
   minLat: z.number().min(-90).max(90),
@@ -36,16 +46,87 @@ const BboxClauseSchema = z.object({
   maxLng: z.number().min(-180).max(180),
 });
 
-// Discriminated on `op`, which — combined with the `.max(1)` on the array below
-// — is what makes a radius and a bbox MUTUALLY EXCLUSIVE: supplying both is two
-// clauses and is rejected, rather than one silently winning.
+// With `.max(1)` on the array below, a radius and a bbox are mutually exclusive.
 const SpatialClauseSchema = z.discriminatedUnion('op', [DwithinClauseSchema, BboxClauseSchema]);
 
-const FilterClauseSchema = z.object({
-  op: z.enum(['eq', 'neq', 'in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
-  target: z.string().regex(/^item_state\.[A-Za-z0-9_]+$/, 'target must be item_state.<field>'),
+const MAX_EPOCH_SECONDS = 253402300799;
+
+const EpochSecondsSchema = z.number().int().min(0).max(MAX_EPOCH_SECONDS);
+
+export const STATUS_GROUPS = ['create', 'accept', 'reject', 'cancel'] as const;
+
+const ACTION_MATCH_TARGETS = new Set(['type', 'status', 'status_group']);
+const ACTION_DATE_TARGETS = new Set(['created_at', 'updated_at']);
+const ACTION_MATCH_OPS = new Set(['eq', 'neq', 'in', 'not_in']);
+const ACTION_DATE_OPS = new Set(['gte', 'lte']);
+const STATUS_GROUP_SET: ReadonlySet<string> = new Set(STATUS_GROUPS);
+
+const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+const toText = (v: unknown): unknown => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : v);
+
+function coerceActionValues(clause: unknown): unknown {
+  if (typeof clause !== 'object' || clause === null) return clause;
+  const f = clause as { objType?: unknown; target?: unknown; value?: unknown };
+  if (f.objType !== 'action' || typeof f.target !== 'string' || !ACTION_MATCH_TARGETS.has(f.target)) return clause;
+  return { ...f, value: Array.isArray(f.value) ? f.value.map(toText) : toText(f.value) };
+}
+
+function checkActionClause(f: { op: string; target: string; value: unknown }, ctx: z.RefinementCtx): void {
+  if (ACTION_DATE_TARGETS.has(f.target)) {
+    if (!ACTION_DATE_OPS.has(f.op)) {
+      ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}' (use gte or lte)`, path: ['op'] });
+    } else if (!EpochSecondsSchema.safeParse(f.value).success) {
+      ctx.addIssue({ code: 'custom', message: `action target '${f.target}' requires whole epoch seconds`, path: ['value'] });
+    }
+    return;
+  }
+  if (!ACTION_MATCH_TARGETS.has(f.target)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `action target must be one of ${[...ACTION_MATCH_TARGETS, ...ACTION_DATE_TARGETS].join(', ')}`,
+      path: ['target'],
+    });
+    return;
+  }
+  if (!ACTION_MATCH_OPS.has(f.op)) {
+    ctx.addIssue({ code: 'custom', message: `op '${f.op}' is not allowed on action target '${f.target}'`, path: ['op'] });
+    return;
+  }
+  const isList = f.op === 'in' || f.op === 'not_in';
+  const values = isList ? f.value : [f.value];
+  if (!Array.isArray(values) || values.length === 0 || !values.every(isNonEmptyString)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: isList ? `op '${f.op}' requires a non-empty array of strings` : `op '${f.op}' requires a string value`,
+      path: ['value'],
+    });
+    return;
+  }
+  if (f.target === 'status_group') {
+    const unknown = values.filter((v) => !STATUS_GROUP_SET.has(v));
+    if (unknown.length > 0) {
+      ctx.addIssue({ code: 'custom', message: `unknown status_group ${unknown.join(', ')}; use ${STATUS_GROUPS.join(', ')}`, path: ['value'] });
+    }
+  }
+}
+
+const FilterClauseSchema = z.preprocess(coerceActionValues, z.object({
+  objType: z.literal('action').optional(),
+  op: z.enum(['eq', 'neq', 'in', 'not_in', 'contains', 'contains_any', 'gt', 'gte', 'lt', 'lte']),
+  target: z.string(),
   value: z.unknown(),
 }).superRefine((f, ctx) => {
+  if (f.objType === 'action') {
+    checkActionClause(f, ctx);
+    return;
+  }
+  if (!/^item_state\.\w+$/.test(f.target)) {
+    ctx.addIssue({ code: 'custom', message: 'target must be item_state.<field>', path: ['target'] });
+  }
+  if (f.op === 'not_in') {
+    ctx.addIssue({ code: 'custom', message: `op 'not_in' is only allowed on action clauses`, path: ['op'] });
+  }
   // Numeric comparators must carry a finite number; otherwise Number(value) in the
   // query builder yields NaN and silently matches nothing.
   if (['gt', 'gte', 'lt', 'lte'].includes(f.op) && (typeof f.value !== 'number' || !Number.isFinite(f.value))) {
@@ -55,49 +136,64 @@ const FilterClauseSchema = z.object({
   if (f.op === 'in' && !Array.isArray(f.value)) {
     ctx.addIssue({ code: 'custom', message: `op 'in' requires an array value`, path: ['value'] });
   }
-});
+}));
 
-// Explicit ordering (#644). ABSENT is meaningful: it preserves the historical
-// inferred behaviour (cosine > distance > recency), so existing callers are
-// unaffected. See resolveSort in search_route.ts.
+// Absent selects the inferred ordering (see resolveSort in search_route.ts).
 export const SortModeSchema = z.enum(['relevance', 'newest', 'nearest']);
 export type SortMode = z.infer<typeof SortModeSchema>;
 
-// A centre used ONLY for ordering — it never produces a WHERE predicate.
-// Deliberately NOT subject to the anchorless-spatial refine below: an ordering
-// centre needs no anchor, because it filters nothing.
+// Used only for ordering, never as a WHERE predicate, so it needs no anchor.
 const OrderingCenterSchema = z.object({
   type: z.literal('Point'),
   coordinates: z.tuple([z.number(), z.number()]), // GeoJSON order: [lng, lat]
 });
 
-export const IntentSchema = z.object({
+const DateRangeSchema = z.object({
+  gte: EpochSecondsSchema.optional(),
+  lte: EpochSecondsSchema.optional(),
+}).refine((r) => r.gte === undefined || r.lte === undefined || r.gte <= r.lte, {
+  message: 'gte must not be later than lte',
+});
+
+const IntentFieldsSchema = z.object({
   textSearch: z.string().min(1).optional(),
-  // z.guid(), not z.uuid(): zod 4 tightened .uuid() to enforce the RFC 9562
-  // version/variant nibbles, which would reject ids that this API has always
-  // accepted (any 8-4-4-4-12 hex string, e.g. '1111...-1111'). z.guid() is zod 4's
-  // name for the loose form and preserves the pre-zod-4 contract exactly.
-  // Tightening to RFC-conforming ids is a deliberate API change, not a side
-  // effect of a dependency bump — see #98.
+  // z.guid(), not z.uuid(): zod 4's .uuid() enforces RFC 9562 version/variant
+  // nibbles and would reject accepted ids like '1111...-1111'. Tightening this
+  // is an API change.
   item: z.object({ id: z.guid() }).optional(),
-  // At most one spatial clause: the search applies a single radius filter
-  // (only the first clause was ever consumed), so reject extras explicitly
-  // rather than silently ignoring them.
+  // The search applies one spatial clause, so extras are rejected, not ignored.
   spatial: z.array(SpatialClauseSchema)
     .max(1, 'at most one spatial clause is supported — a point radius (s_dwithin) and a bbox are mutually exclusive')
     .optional(),
   filters: z.array(FilterClauseSchema).optional(),
-  // Both new fields live INSIDE intent, never on `message` beside pagination:
-  // cacheKey() hashes {networkId, domain, itemType, intent, pagination}, so
-  // placing them here makes the cache key cover them for free. Outside intent,
-  // two requests differing only in `sort` would share one cache entry.
+  // sort and orderingCenter must stay inside intent so cacheKey() covers them;
+  // elsewhere, requests differing only in `sort` would share a cache entry.
   sort: SortModeSchema.optional(),
   orderingCenter: OrderingCenterSchema.optional(),
-}).superRefine((intent, ctx) => {
-  // An s_dwithin clause without `geometry` derives the search center from the
-  // anchor item, so it requires `item.id`. Without an anchor there is no point
-  // to search around. A bbox carries its own bounds, so it never needs one.
-  const hasAnchorlessSpatial = (intent.spatial ?? []).some((s) => s.op === 's_dwithin' && !s.geometry);
+  include_action: z.boolean().optional(),
+  created_at: DateRangeSchema.optional(),
+  updated_at: DateRangeSchema.optional(),
+});
+
+type IntentFields = z.infer<typeof IntentFieldsSchema>;
+
+function checkActionAnchor(intent: IntentFields, ctx: z.RefinementCtx): void {
+  if (!intent.item?.id) {
+    if (intent.include_action) {
+      ctx.addIssue({ code: 'custom', message: 'include_action requires intent.item.id', path: ['include_action'] });
+    }
+    if (intent.filters?.some((f) => f.objType === 'action')) {
+      ctx.addIssue({ code: 'custom', message: 'an action filter requires intent.item.id', path: ['filters'] });
+    }
+  }
+}
+
+function checkAnchorlessSpatial(intent: IntentFields, ctx: z.RefinementCtx): void {
+  // An s_dwithin clause with neither geometry nor address takes its centre from
+  // the anchor, so it requires item.id. A bbox carries its own bounds.
+  const hasAnchorlessSpatial = (intent.spatial ?? []).some(
+    (s) => s.op === 's_dwithin' && !s.geometry && !s.address,
+  );
   if (hasAnchorlessSpatial && !intent.item?.id) {
     ctx.addIssue({
       code: 'custom',
@@ -105,13 +201,24 @@ export const IntentSchema = z.object({
       path: ['spatial'],
     });
   }
+}
 
-  // Bbox bounds must be correctly ordered. Rejected rather than normalised: a
-  // transposed box is a caller bug, and silently swapping the corners would
-  // search an area they did not ask for. A box with minLng > maxLng is how an
-  // antimeridian-crossing viewport would arrive — unsupported, and failing
-  // loudly is better than returning an empty result set that looks like
-  // "nothing here".
+function checkAddressClauses(intent: IntentFields, ctx: z.RefinementCtx): void {
+  for (const s of intent.spatial ?? []) {
+    if (s.op !== 's_dwithin' || !s.address) continue;
+    if (s.geometry) {
+      ctx.addIssue({ code: 'custom', message: 'address and geometry are mutually exclusive', path: ['spatial'] });
+    }
+    if (intent.item?.id) {
+      ctx.addIssue({ code: 'custom', message: 'address cannot be combined with intent.item.id', path: ['spatial'] });
+    }
+  }
+}
+
+function checkBboxClauses(intent: IntentFields, ctx: z.RefinementCtx): void {
+  // Misordered bounds are rejected, not swapped: swapping would search an area
+  // the caller did not ask for. minLng > maxLng is an antimeridian-crossing
+  // viewport, which is unsupported and would otherwise return an empty page.
   for (const s of intent.spatial ?? []) {
     if (s.op !== 'bbox') continue;
     if (s.minLat >= s.maxLat) {
@@ -129,6 +236,13 @@ export const IntentSchema = z.object({
       });
     }
   }
+}
+
+export const IntentSchema = IntentFieldsSchema.superRefine((intent, ctx) => {
+  checkActionAnchor(intent, ctx);
+  checkAnchorlessSpatial(intent, ctx);
+  checkAddressClauses(intent, ctx);
+  checkBboxClauses(intent, ctx);
 });
 
 export const PaginationSchema = z.object({
@@ -142,11 +256,16 @@ export const SearchRequestSchema = z.object({
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
-// Body shape for POST /v1/search/flat: a flat object of dot-delimited canonical
-// paths (numeric segment = array index), values may all be strings. It cannot be
-// described by SearchRequestSchema, so the route accepts this permissive record
-// and validates against SearchRequestSchema AFTER unflattening + JSON-parsing.
+// POST /v1/search/flat body: a flat record of dot-delimited paths, validated
+// against SearchRequestSchema after unflattening.
 export const FlatSearchRequestSchema = z.record(z.string(), z.unknown());
+
+export const ItemActionSchema = z.object({
+  type: z.string(),
+  status: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
 
 export const ItemResultSchema = z.object({
   item_network: z.string(),
@@ -163,6 +282,7 @@ export const ItemResultSchema = z.object({
   lifecycle_status: z.string(),
   score: z.number().optional(),
   distanceMeters: z.number().optional(),
+  action: ItemActionSchema.optional(),
 });
 
 export const SearchResponseSchema = z.object({
@@ -173,41 +293,36 @@ export const SearchResponseSchema = z.object({
       total: z.number(),
       limit: z.number(),
       offset: z.number(),
-      // Always present: the order actually applied after the contract §1.2
-      // fallbacks, so a client can never claim an order it did not get. When
-      // the request sent no `sort`, this names whichever inferred path ran.
+      // The order actually applied, after any degradation or inference.
       sort_applied: SortModeSchema,
     }),
+    // Present only when the request carried a spatial address.
+    resolvedLocation: ResolvedLocationSchema.optional(),
   }),
 });
 export type SearchResponse = z.infer<typeof SearchResponseSchema>;
 
-// A fully-qualified reference to a single indexed item (its composite PK), with
-// the redundant `item_` prefix dropped since the nesting already says "item".
-// `network` lives on each ref (not hoisted) so source and target may be in
-// different networks — cross-network relevance is a supported use case, gated
-// by the cross-network interaction matrix. `id` is a UUID for parity with the
-// items table and the anchor lookup in /v1/search.
+// A reference to one indexed item (its composite PK). `network` is per ref
+// because source and target may be in different networks, gated by the
+// cross-network interaction matrix.
 export const RelevanceRefSchema = z.object({
   network: z.string().min(1),
   domain: z.string().min(1),
   type: z.string().min(1),
-  // z.guid() rather than z.uuid() — see the note on IntentSchema.item above.
+  // z.guid(), not z.uuid(): see IntentSchema.item.
   id: z.guid(),
 });
 
-// POST /v1/relevance body: the two items whose stored embeddings are compared.
-// Directional — `source` is the item scored FROM (e.g. the viewer's profile),
-// `target` the item scored AGAINST — matching the interaction matrix's from→to.
+// POST /v1/relevance body. Directional: `source` (e.g. the viewer's profile) is
+// scored against `target`, matching the interaction matrix's from→to.
 export const RelevanceRequestSchema = z.object({
   source: RelevanceRefSchema,
   target: RelevanceRefSchema,
 });
 export type RelevanceRequest = z.infer<typeof RelevanceRequestSchema>;
 
-// POST /v1/relevance response: relevance as a percentage in [0, 100] derived
-// from the cosine similarity of the two items' embeddings (higher = more
-// similar). Band/confidence/reasoning are intentionally omitted for V1.
+// POST /v1/relevance response: cosine similarity of the two embeddings as a
+// percentage in [0, 100].
 export const RelevanceResponseSchema = z.object({
   score: z.number(),
 });

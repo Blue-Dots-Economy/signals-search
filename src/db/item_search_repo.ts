@@ -1,14 +1,11 @@
 import type { Sql } from 'postgres';
 
-/** Fixed embedding dimension of the item_search.embedding column (vector(1024)).
- *  Changing the embedding model's output dim requires a new migration. */
+/** Dimension of the item_search.embedding column. Changing it needs a new migration. */
 export const ITEM_SEARCH_VECTOR_DIM = 1024;
 
 export type ItemLocation = { lat: number; lng: number; label?: string };
 
-/** The full composite primary key of item_search.
- *  item_id alone is a globally-unique UUID today, but reads/deletes key on the
- *  whole PK for index usage and consistency with the table definition. */
+/** The composite primary key of item_search. Reads and deletes key on all of it. */
 export type ItemKey = {
   item_network: string;
   item_domain: string;
@@ -17,24 +14,17 @@ export type ItemKey = {
 };
 
 export type UpsertInput = ItemKey & {
-  /** null when the item has no vectorizable content; stored as a NULL vector
-   *  (the column is nullable). Such rows stay discoverable via geo/structured
-   *  filters and recency, and search_query ranks them last (NULLS LAST) for
-   *  vector queries. */
+  /** null when the item has no vectorizable content. Such rows stay findable by
+   *  geo, structured filters and recency; vector queries sort them last or, on an
+   *  HNSW index scan, omit them. */
   embedding: number[] | null;
   locations: ItemLocation[];
   lifecycleStatus: string;
   modelVersion: string;
   contentHash: string;
-  /** `items.updated_at` of the row version this write describes (#122) — the
-   *  value READ with the row, never `now()`. The sweep compares it against the
-   *  live `items.updated_at`, so stamping the write clock instead would record a
-   *  pre-embed snapshot as if it were current and permanently hide any update
-   *  that landed during the embed.
-   *
-   *  An `extract(epoch ...)::text` decimal string rather than a `Date` or a
-   *  timestamp string — see `SourceItem.updated_at_epoch` for why both of those
-   *  silently truncate to milliseconds and break the comparison. */
+  /** `items.updated_at` read with the row, never `now()`: the sweep compares it
+   *  with the live value, so the write clock would hide updates made during the
+   *  embed. An epoch decimal string; see `SourceItem.updated_at_epoch`. */
   sourceUpdatedAtEpoch: string;
 };
 
@@ -76,17 +66,10 @@ export class ItemSearchRepo {
         source_updated_at = EXCLUDED.source_updated_at`;
   }
 
-  /** Advance the indexed-version marker without rewriting the row (#122).
-   *
-   *  For the skip path: the content hash proved nothing the read model derives
-   *  from has changed, but the source row HAS moved on, so the marker must catch
-   *  up. Without this a change to any field outside the hash (a private-state
-   *  edit, a non-vectorized public field) keeps matching the sweep predicate on
-   *  every tick forever — and since the sweep orders by `updated_at ASC` and
-   *  takes a bounded batch, enough such rows starve newer ones out entirely.
-   *
-   *  A no-op when the row is absent, which is correct: no row means the caller
-   *  did not take the skip path. */
+  /** Advances the source-version marker on the unchanged-hash skip path.
+   *  Without it, an edit outside the hash keeps matching the sweep predicate on
+   *  every tick, and enough such rows starve newer ones out of the bounded,
+   *  oldest-first sweep batch. A no-op when the row is absent. */
   async markSourceVersion(key: ItemKey, sourceUpdatedAtEpoch: string): Promise<void> {
     await this.sql`
       UPDATE item_search SET source_updated_at = to_timestamp(${sourceUpdatedAtEpoch}::numeric)

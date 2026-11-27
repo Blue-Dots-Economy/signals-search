@@ -3,25 +3,44 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { ApiDeps } from './server.js';
 import { SearchRequestSchema, FlatSearchRequestSchema, SearchResponseSchema, ErrorSchema, type SearchRequest, type SearchResponse, type SortMode } from './schemas.js';
 import { authenticateApiKey } from './auth.js';
-import { searchItems, type FilterClause } from '../db/search_query.js';
+import { searchItems, type ActionFilter, type ActionMatch, type FilterClause } from '../db/search_query.js';
+import type { MetricBucket, NetworkRegistry } from '../config/network_registry.js';
 import { serializeItemText } from '../ingest/serialize.js';
 import { cacheKey, getCached, setCached } from './result_cache.js';
 import { TeiReranker } from '../rerank/reranker.js';
 import { unflatten } from './unflatten.js';
+import { DEFAULT_RADIUS_BY_PRECISION } from '../config.js';
 
-// Re-exported from the wire schema rather than re-declared, so the decision
-// table and the accepted/reported values can never drift apart.
+type ResolvedLocation = NonNullable<SearchResponse['message']['resolvedLocation']>;
+
+type ActionClause = { op: string; target: string; value: unknown };
+
+function toActionFilter(registry: NetworkRegistry, network: string, f: ActionClause): ActionFilter {
+  if (f.target === 'created_at' || f.target === 'updated_at') {
+    const bound = f.op === 'gte' ? { gte: f.value as number } : { lte: f.value as number };
+    return { exclude: false, anyOf: [{ field: f.target, range: bound }] };
+  }
+  const values = (Array.isArray(f.value) ? f.value : [f.value]) as string[];
+  const exclude = f.op === 'neq' || f.op === 'not_in';
+  let anyOf: ActionMatch[];
+  if (f.target === 'status_group') {
+    anyOf = values.map((g) => {
+      const set = registry.statusGroup(network, g as MetricBucket);
+      return { field: 'action_status', values: set.statuses, negate: set.negate };
+    });
+  } else {
+    anyOf = [{ field: f.target === 'type' ? 'action_type' : 'action_status', values, negate: false }];
+  }
+  return { exclude, anyOf };
+}
+
+// Re-exported from the wire schema so accepted and reported values cannot drift.
 export type { SortMode } from './schemas.js';
 
 /**
- * Resolve the ORDER the request will actually get. Pure and exported so the
- * decision table is testable without a database or a live route.
- *
- * Contract (docs/superpowers/plans/2026-09-03-list-view-wire-contract.md §1.2):
- * an unsatisfiable `sort` NEVER errors — it degrades to `newest`, and the caller
- * is told via `meta.sort_applied`. With no `sort` requested we reproduce today's
- * inferred precedence exactly (cosine > distance > recency) so existing callers
- * see no change.
+ * Resolves the order the request actually gets. An unsatisfiable `sort` never
+ * errors: it degrades to `newest`, reported via `meta.sort_applied`. With no
+ * `sort`, the inferred precedence (cosine, else distance, else recency) applies.
  */
 export function resolveSort(input: {
   requested?: SortMode;
@@ -36,7 +55,7 @@ export function resolveSort(input: {
   if (input.requested === 'nearest') return input.hasCenter ? 'nearest' : 'newest';
   if (input.requested === 'newest') return 'newest';
 
-  // No explicit sort: today's inferred behaviour, preserved exactly.
+  // No explicit sort: the inferred ordering.
   if (canRelevance) return 'relevance';
   if (input.hasSpatialFilter && input.hasCenter) return 'nearest';
   return 'newest';
@@ -45,19 +64,11 @@ export function resolveSort(input: {
 export type OrderingCenter = { lat: number; lng: number };
 
 /**
- * Resolve the centre that `sort: 'nearest'` orders around. Pure and exported so
- * the precedence is testable on its own, and written as statements rather than
- * a ternary chain because the order of the rules IS the contract.
- *
- * Contract §1.3 — first match wins:
- *   1. an explicit `intent.orderingCenter`
- *   2. the spatial filter's own centre (an area filter doubles as the centre)
- *   3. the anchor item's stored location
- *   4. none → undefined, and resolveSort degrades `nearest` to `newest`
- *
- * Deliberately independent of whether an area filter exists: with no spatial
- * clause the candidate set stays network-wide while the order is nearest-first,
- * which is the capability #644 is built on.
+ * Resolves the centre that `sort: 'nearest'` orders around. First match wins:
+ * explicit `intent.orderingCenter`, then the radius filter's centre, then the
+ * anchor's stored location. Undefined makes resolveSort degrade `nearest` to
+ * `newest`. A centre needs no spatial filter, so nearest-first can span the
+ * whole network.
  */
 export function resolveOrderingCenter(input: {
   explicit?: { coordinates: [number, number] };
@@ -78,11 +89,12 @@ export function resolveOrderingCenter(input: {
   return undefined;
 }
 
-// Shared execution core for both /v1/search (nested body) and
-// /v1/search/flat (flattened body). Both routes obtain a validated
-// SearchRequest and then delegate here — the ONLY difference between the
-// routes is how the request body is parsed into that SearchRequest, so there
-// is exactly one execution path (cache, embed, spatial, search, rerank).
+function geocoderUnavailable(reply: FastifyReply): FastifyReply {
+  return reply.code(503).send({ error: 'GEOCODER_UNAVAILABLE', message: 'Geocoding is temporarily unavailable; retry later' });
+}
+
+// Single execution path for /v1/search and /v1/search/flat; the routes differ
+// only in how they parse the body into a SearchRequest.
 async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest): Promise<FastifyReply> {
   const { context, message } = body;
   const { networkId, domain, itemType } = context;
@@ -91,25 +103,18 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     return reply.code(404).send({ error: 'UNSERVED_DOMAIN', message: `${networkId}/${domain} not served` });
   }
 
-  // Anchor path: resolve the anchor's vector + domain and enforce the
-  // interaction matrix BEFORE any cache lookup, so authorization and anchor
-  // freshness (a deindexed anchor → 404) are always re-checked and never
-  // served from a stale cache entry.
+  // The anchor and the interaction matrix are checked before the cache lookup,
+  // so authorization and anchor freshness are never served from cache.
   let queryVector: number[] | undefined;
-  // Anchor's own stored location (first point of its geo), used when a
-  // spatial clause omits geometry ("search near this profile's location").
+  // Anchor's stored location, used when a radius clause omits geometry.
   let anchorLat: number | null = null;
   let anchorLng: number | null = null;
   if (message.intent.item?.id) {
-    // geo is a geography(MultiPoint); use ST_GeometryN to take the first
-    // point (ST_PointN only works on LineStrings → NULL for MultiPoint).
-    // Scope by item_network so the lookup uses the composite-PK index
-    // (item_network is the leading column) instead of a seq scan, AND can
-    // only ever resolve an anchor inside the caller's own network — the
-    // anchor's embedding/domain/lat/lng below all come from THIS row, so a
-    // cross-network anchor would be an authz hole. We intentionally do NOT
-    // scope by domain/item_type: the anchor legitimately belongs to a
-    // different domain/type than context (interaction matrix = authz).
+    // geo is a MultiPoint: ST_GeometryN takes the first point (ST_PointN
+    // returns NULL). Scoping by item_network uses the PK index and keeps the
+    // anchor inside the caller's network; a cross-network anchor would be an
+    // authz hole. Domain and type are not scoped because the anchor may belong
+    // to another domain; the interaction matrix below authorizes that.
     const rows = await deps.sql<{ item_domain: string; embedding: string | null; lat: number | null; lng: number | null }[]>`
       SELECT item_domain, embedding::text AS embedding,
              ST_Y(ST_GeometryN(geo::geometry, 1)) AS lat,
@@ -128,44 +133,74 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     anchorLng = rows[0].lng;
   }
 
-  // At most one clause (schema-enforced), discriminated on `op`: a point
-  // radius or a rectangular viewport, never both.
+  // At most one spatial clause (schema-enforced): a radius or a bbox.
   const spatialClause = message.intent.spatial?.[0];
   const radiusClause = spatialClause?.op === 's_dwithin' ? spatialClause : undefined;
   const bboxClause = spatialClause?.op === 'bbox' ? spatialClause : undefined;
   const pagination = message.pagination;
   const normalized = { networkId, domain, itemType, intent: message.intent, pagination };
   const key = cacheKey(normalized);
-  const cached = await getCached<SearchResponse>(deps.redis, key);
+  const allFilters = message.intent.filters ?? [];
+  const actionClauses = allFilters.filter((f) => f.objType === 'action');
+  const knownTypes = deps.registry.actionTypes(networkId);
+  const unknownType = actionClauses
+    .filter((f) => f.target === 'type')
+    .flatMap((f) => (Array.isArray(f.value) ? f.value : [f.value]) as string[])
+    .find((t) => !knownTypes.includes(t));
+  if (unknownType !== undefined) {
+    return reply.code(400).send({
+      error: 'VALIDATION_ERROR',
+      message: `unknown action type '${unknownType}' for network ${networkId}; use ${knownTypes.join(', ')}`,
+    });
+  }
+  const includeAction = message.intent.include_action === true;
+  const anchorId = message.intent.item?.id;
+  const action = anchorId && (actionClauses.length > 0 || includeAction)
+    ? { anchorId, include: includeAction, filters: actionClauses.map((f) => toActionFilter(deps.registry, networkId, f)) }
+    : undefined;
+  const cacheable = action === undefined;
+  const cached = cacheable ? await getCached<SearchResponse>(deps.redis, key) : null;
   if (cached) return reply.code(200).send(cached);
 
-  // textSearch (non-anchor) path: embedding is the most expensive hop in the
-  // request, so it runs only on a cache MISS. No interaction-matrix check
-  // applies here — the target is the caller-declared context.domain, already
-  // gated by the served-domain check above, with no anchor source domain to
-  // scope against.
-  // #148: text and an anchor are NO LONGER mutually exclusive. With an anchor
-  // present its stored embedding remains the query vector (so relevance still
-  // explains the order) and the text is applied as a narrowing WHERE predicate
-  // in search_query.ts. Without an anchor, text becomes the query vector as
-  // before. Gating on `!queryVector` rather than on the anchor id keeps the
-  // embed call on the cache-MISS-only path it was always on.
+  // Without an anchor, the text is embedded as the query vector; with one, the
+  // anchor's vector ranks and the text narrows (see textSearch below). Embedding
+  // is the most expensive hop, so it runs only on a cache miss. No
+  // interaction-matrix check applies: there is no anchor source domain, and
+  // context.domain passed the served-domain check above.
   if (!queryVector && message.intent.textSearch) {
     [queryVector] = await deps.embedder.embed([message.intent.textSearch]);
   }
 
-  // Rerank only applies to free-text search (the cross-encoder scores query-vs-doc)
-  // and only when enabled with a configured endpoint. The SAME predicate must gate
-  // both the stage-1 over-fetch and the slice-back — otherwise we over-fetch without
-  // re-paginating (e.g. an anchor search with rerank on would return up to topN rows
-  // and ignore the requested offset). See PR #7 review.
-  // Resolve the spatial search center:
-  //  - geometry present → use the explicit point (profile location ignored)
-  //  - geometry absent  → use the anchor's own location (item.id guaranteed
-  //    by the schema refine); 422 if the anchor has no stored location
-  //  - distanceMeters falls back to the configured default when omitted
+  // Radius centre: the explicit geometry, else the resolved address, else the
+  // anchor's location (the schema requires item.id when geometry is absent), else 422.
   let spatialParam: { lat: number; lng: number; distanceMeters: number } | undefined;
-  if (radiusClause) {
+  let resolvedLocation: ResolvedLocation | undefined;
+  if (radiusClause?.address) {
+    // Checked before the anchor fallback: an address clause has no geometry and no anchor.
+    if (!deps.geocoder) return geocoderUnavailable(reply);
+    const found = await deps.geocoder.resolve(radiusClause.address);
+    if (found.kind === 'not_found') {
+      return reply.code(422).send({
+        error: 'LOCATION_NOT_RESOLVED',
+        message: `Could not resolve location '${radiusClause.address}' to a place`,
+      });
+    }
+    if (found.kind === 'unavailable') {
+      // The address is user input and can be PII; log the reason only.
+      reply.log.warn({ reason: found.reason }, 'geocoder unavailable');
+      return geocoderUnavailable(reply);
+    }
+    const radii = deps.radiusByPrecision ?? DEFAULT_RADIUS_BY_PRECISION;
+    const radiusMeters = radiusClause.distanceMeters ?? radii[found.precision];
+    spatialParam = { lat: found.lat, lng: found.lng, distanceMeters: radiusMeters };
+    resolvedLocation = {
+      input: radiusClause.address,
+      label: found.label,
+      point: { type: 'Point', coordinates: [found.lng, found.lat] },
+      precision: found.precision,
+      radiusMeters,
+    };
+  } else if (radiusClause) {
     const distanceMeters = radiusClause.distanceMeters ?? deps.defaultDistanceMeters;
     if (radiusClause.geometry) {
       spatialParam = { lat: radiusClause.geometry.coordinates[1], lng: radiusClause.geometry.coordinates[0], distanceMeters };
@@ -179,8 +214,7 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     }
   }
 
-  // Only a CANDIDATE — whether it reaches the query at all depends on the sort
-  // resolved below.
+  // A candidate only: it reaches the query only if the resolved sort is nearest.
   const candidateCenter = resolveOrderingCenter({
     explicit: message.intent.orderingCenter,
     spatialFilter: spatialParam,
@@ -193,74 +227,51 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
     hasAnchor: !!message.intent.item?.id,
     hasText: !!message.intent.textSearch,
     hasCenter: !!candidateCenter,
-    // s_dwithin ONLY, not bbox. This flag exists for the INFERRED (no `sort`)
-    // branch, and the inferred SQL orders by distance only when a radius
-    // clause is present — a bbox filters without ordering. Counting a bbox
-    // here let `meta.sort_applied` report `nearest` over a page actually
-    // ordered by `indexed_at`, whenever a caller sent a bbox plus an
-    // orderingCenter and no `sort`.
+    // Radius only, not bbox: the inferred SQL orders by distance only for a
+    // radius clause, so counting a bbox would misreport `meta.sort_applied`.
     hasSpatialFilter: !!spatialParam,
   });
 
-  // Rerank over-fetches `topN` rows from offset 0 and slices the requested page
-  // back out of that window, so a request whose window falls OUTSIDE the band
-  // returned an EMPTY page under a full meta.total — and burned a reranker call
-  // producing it. Degrade ranking quality at depth instead: skip reranking for
-  // that request and page natively from the requested offset (spec §3.6).
-  // Also gated on the RESOLVED sort. Reranking reorders by query-vs-document
-  // relevance, so applying it to a recency or distance page would silently
-  // replace that order while meta.sort_applied still claimed `newest` /
-  // `nearest` — the caller is told one order and served another. Latent only
-  // because RERANK_DEFAULT is false by default; it bites wherever rerank is
-  // switched on.
+  // Rerank needs RERANK_DEFAULT, an endpoint, free text (the cross-encoder scores
+  // query vs document) and a resolved `relevance` sort; reranking a recency or
+  // distance page would contradict meta.sort_applied. It over-fetches `topN`
+  // rows from offset 0 and slices the page back out, so a page beyond that
+  // window skips reranking and pages natively. willRerank must gate both the
+  // over-fetch and the slice-back.
   const rerankEligible = deps.rerank.defaultOn
     && !!deps.rerank.baseUrl
     && !!message.intent.textSearch
     && sortApplied === 'relevance';
   const topN = Math.max(pagination.limit, deps.rerank.topN);
   const willRerank = rerankEligible && pagination.offset + pagination.limit <= topN;
-  // The centre reaches the query ONLY when the applied sort actually orders by
-  // distance. Otherwise it would populate the SELECT's distance expression and
-  // start emitting distanceMeters on every anchor search — a silent wire change
-  // for callers that never asked for a location. A spatial FILTER still
-  // supplies its own centre inside search_query, so area-filtered searches keep
-  // reporting distances exactly as before.
-  //
-  // `sort` is likewise only forwarded when the caller actually sent one: absent
-  // means "use the historical inferred ordering", which search_query preserves
-  // byte-for-byte. meta.sort_applied above still names whichever path ran.
+  // The centre is forwarded only for a nearest sort; otherwise every anchor
+  // search would emit distanceMeters. A radius filter still supplies its own
+  // centre inside search_query. `sort` is forwarded only when the caller sent
+  // one, so an absent sort keeps the inferred ordering.
   const requestedSort = message.intent.sort;
   const { rows, total } = await searchItems(deps.sql, {
     item_network: networkId, item_domain: domain, item_type: itemType,
     queryVector,
     spatial: spatialParam,
-    // Membership only. A bbox never contributes an ordering centre: using the
-    // viewport's midpoint to order would make "search this area" silently
-    // change the sort. A caller wanting nearest-first inside a viewport sends
-    // `orderingCenter` alongside the bbox.
+    // Membership only: a bbox never contributes an ordering centre.
     ...(bboxClause
       ? { bbox: { minLat: bboxClause.minLat, minLng: bboxClause.minLng, maxLat: bboxClause.maxLat, maxLng: bboxClause.maxLng } }
       : {}),
     ...(requestedSort ? { sort: sortApplied } : {}),
     ...(requestedSort && sortApplied === 'nearest' ? { orderingCenter: candidateCenter } : {}),
-    // #148: narrow on the same fields that define semantic relevance. `.path`
-    // because vectorizeFields returns {path, weight}, and the weights only
-    // matter for serialization/reranking, not for a match predicate.
-    //
-    // ONLY when an anchor is present. That is the whole of what #148 asked for
-    // — the bug was text being DISCARDED when an anchor already supplied the
-    // query vector. With no anchor the text IS the query vector, so it must
-    // RANK rather than filter: adding a literal predicate there would mean
-    // cosine could only ever reorder rows that already contain the typed
-    // string, which deletes semantic recall on the main browse path and is the
-    // opposite of what an embedding search is for.
+    // Text narrows on the vectorized fields only when an anchor is present.
+    // Without one the text is the query vector and must rank, not filter, or
+    // semantic recall is lost.
     ...(message.intent.textSearch && message.intent.item?.id
       ? {
           textSearch: message.intent.textSearch,
           textSearchFields: deps.registry.vectorizeFields(networkId, domain, itemType).map((f) => f.path),
         }
       : {}),
-    filters: (message.intent.filters ?? []) as FilterClause[],
+    filters: allFilters.filter((f) => f.objType !== 'action') as FilterClause[],
+    createdAt: message.intent.created_at,
+    updatedAt: message.intent.updated_at,
+    action,
     limit: willRerank ? topN : pagination.limit,
     offset: willRerank ? 0 : pagination.offset,
   });
@@ -274,8 +285,7 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
         .rerank(message.intent.textSearch, texts);
       ordered = order.map((i) => rows[i]);
     }
-    // We over-fetched from offset 0; apply the requested page now. This also yields
-    // an empty page when offset >= the over-fetched window, which is correct.
+    // Over-fetched from offset 0, so slice out the requested page.
     ordered = ordered.slice(pagination.offset, pagination.offset + pagination.limit);
   }
 
@@ -289,11 +299,13 @@ async function runSearch(reply: FastifyReply, deps: ApiDeps, body: SearchRequest
         created_at: r.created_at, updated_at: r.updated_at, created_by: r.created_by, lifecycle_status: r.lifecycle_status,
         ...(r.score != null ? { score: Number(r.score.toFixed(4)) } : {}),
         ...(r.distanceMeters != null ? { distanceMeters: Math.round(r.distanceMeters) } : {}),
+        ...(r.action ? { action: r.action } : {}),
       })),
       meta: { total, limit: pagination.limit, offset: pagination.offset, sort_applied: sortApplied },
+      ...(resolvedLocation ? { resolvedLocation } : {}),
     },
   };
-  await setCached(deps.redis, key, response, deps.cacheTtlSeconds);
+  if (cacheable) await setCached(deps.redis, key, response, deps.cacheTtlSeconds);
   return reply.code(200).send(response);
 }
 
@@ -304,6 +316,7 @@ const SEARCH_RESPONSES = {
   403: ErrorSchema,
   404: ErrorSchema,
   422: ErrorSchema,
+  503: ErrorSchema,
 } as const;
 
 async function requireApiKey(deps: ApiDeps, apiKey: string | undefined, reply: FastifyReply): Promise<boolean> {
@@ -328,22 +341,21 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
         'FILTERS (s_dwithin); `intent.orderingCenter` only ORDERS and never filters. ' +
         '`meta.sort_applied` always reports the order actually used — an order whose ' +
         'precondition is unmet degrades to newest rather than erroring. textSearch ' +
-        'narrows results even when an anchor supplies the ranking vector.',
+        'narrows results even when an anchor supplies the ranking vector. With an anchor, ' +
+        'a filter with objType "action" filters on the anchor\'s latest action with each ' +
+        'result, and include_action returns that action. created_at / updated_at filter ' +
+        'the item\'s own dates in epoch seconds.',
       security: [{ apiKeyAuth: [] }],
       body: SearchRequestSchema,
       response: SEARCH_RESPONSES,
     },
   }, async (request, reply) => {
     if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
-    // Body is already validated by the Zod route schema (type provider).
     return runSearch(reply, deps, request.body);
   });
 
-  // Flat wrapper for callers that can only emit a one-level object of strings
-  // (e.g. Raya LLM tools — see the design spec). The body is a flat object of
-  // dot-delimited canonical paths; we unflatten + JSON-parse leaves, then
-  // validate with the SAME SearchRequestSchema and run the SAME core. The
-  // canonical /v1/search contract is untouched.
+  // For callers that can only emit a one-level object of strings (e.g. Raya LLM
+  // tools). The body is unflattened, then validated with SearchRequestSchema.
   app.withTypeProvider<ZodTypeProvider>().post('/v1/search/flat', {
     schema: {
       tags: ['search'],
@@ -355,16 +367,14 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
         'validated against the canonical schema. Numeric-looking filter values are parsed ' +
         'as numbers; send a JSON-quoted string (e.g. "\\"560001\\"") to keep one a string.',
       security: [{ apiKeyAuth: [] }],
-      // Permissive body: the flat shape can't be described by SearchRequestSchema,
-      // so we accept any object here and validate after unflattening.
+      // Permissive: validation happens after unflattening.
       body: FlatSearchRequestSchema,
       response: SEARCH_RESPONSES,
     },
   }, async (request, reply) => {
     if (!(await requireApiKey(deps, request.headers['x-api-key'] as string | undefined, reply))) return reply;
-    // unflatten can throw on malformed input (an over-large array index, or a
-    // key that both is a scalar and has children, e.g. {"a":"1","a.b":"2"}).
-    // Map those to the same 400 the schema path returns — never a 500.
+    // unflatten throws on malformed keys (e.g. {"a":"1","a.b":"2"}); map that to
+    // the schema path's 400, never a 500.
     let nested: unknown;
     try {
       nested = unflatten(request.body as Record<string, unknown>);
@@ -373,9 +383,8 @@ export function registerSearchRoute(app: FastifyInstance, deps: ApiDeps): void {
     }
     const parsed = SearchRequestSchema.safeParse(nested);
     if (!parsed.success) {
-      // Concise, path-prefixed message (the raw ZodError JSON is unhelpful to
-      // the non-developer integrators this route targets). The canonical route
-      // returns the fastify-zod message; both share error:'VALIDATION_ERROR'/400.
+      // Path-prefixed message: raw ZodError JSON is unhelpful to this route's
+      // non-developer integrators.
       const message = parsed.error.issues
         .map((i) => `${i.path.join('.') || '(body)'}: ${i.message}`)
         .join('; ');

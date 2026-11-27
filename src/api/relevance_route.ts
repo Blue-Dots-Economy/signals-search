@@ -5,11 +5,7 @@ import { RelevanceRequestSchema, RelevanceResponseSchema, ErrorSchema } from './
 import { authenticateApiKey } from './auth.js';
 import { computeRelevance } from '../db/relevance_query.js';
 
-/**
- * Cosine similarity (in [-1, 1]) → relevance percentage (in [0, 100]).
- * Negative similarities (opposite-facing vectors) clamp to 0: there is no
- * meaningful "negative relevance" to surface to a caller. Rounded to 2 dp.
- */
+/** Cosine similarity [-1, 1] to a percentage [0, 100]; negatives clamp to 0, 2 dp. */
 export function similarityToPercentage(similarity: number): number {
   const clamped = Math.max(0, Math.min(100, similarity * 100));
   return Number(clamped.toFixed(2));
@@ -43,16 +39,11 @@ export function registerRelevanceRoute(app: FastifyInstance, deps: ApiDeps): voi
       return reply.code(401).send({ error: 'UNAUTHORIZED', message: 'valid x-api-key required' });
     }
 
-    // Body is already validated by the Zod route schema (type provider).
     const { source, target } = request.body;
 
-    // Authorization: scoring reads the target item as context, so it is gated on
-    // the interaction matrix (.claude/rules/pii-and-authz.md), like the anchor
-    // path in search_route.ts. source→target (network + domain) must match an
-    // allowed interaction — cross-network pairs included. The network/domain
-    // used here are the SAME values the PK lookup uses below, so a caller cannot
-    // spoof them to pass this check and still score a real row — a mismatched PK
-    // simply yields not-found.
+    // Authorization: the interaction matrix gates source→target, as for the
+    // anchor path (.claude/rules/pii-and-authz.md). The checked network/domain
+    // are the values the PK lookup uses, so spoofing them only yields not-found.
     const allowed = deps.registry.isInteractionAllowedAcross(
       source.network, source.domain, target.network, target.domain,
     );

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { startPostgres, sqlClient } from '../../test/support/pg.js';
+import { startPostgres, sqlClient, createItemActionsTable } from '../../test/support/pg.js';
 import { runMigrations } from './migrate.js';
 import { ItemSearchRepo } from './item_search_repo.js';
-import { searchItems } from './search_query.js';
+import { searchItems, type ActionFilter } from './search_query.js';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Sql } from 'postgres';
 
@@ -117,6 +117,36 @@ describe('searchItems', () => {
     // B has a null item_instance_url and created_by — nullable-field case.
     expect(b.item_instance_url).toBeNull();
     expect(b.created_by).toBeNull();
+  });
+  it('filters by a created_at range, inclusive on both bounds', async () => {
+    const { rows, total } = await searchItems(sql, {
+      ...base, queryVector: vec(1), filters: [], limit: 10, offset: 0,
+      createdAt: { gte: 1767398400, lte: 1767398400 },
+    });
+    expect(total).toBe(1);
+    expect(rows.map((r) => r.item_id)).toEqual([B]);
+  });
+  it('filters by an updated_at lower bound only', async () => {
+    const { rows } = await searchItems(sql, {
+      ...base, queryVector: vec(1), filters: [], limit: 10, offset: 0,
+      updatedAt: { gte: 1767398400 },
+    });
+    expect(rows.map((r) => r.item_id)).toEqual([B]);
+  });
+  it('filters by an updated_at upper bound only', async () => {
+    const { rows } = await searchItems(sql, {
+      ...base, queryVector: vec(1), filters: [], limit: 10, offset: 0,
+      updatedAt: { lte: 1767312000 },
+    });
+    expect(rows.map((r) => r.item_id)).toEqual([A]);
+  });
+  it('combines created_at and updated_at ranges', async () => {
+    const { total } = await searchItems(sql, {
+      ...base, queryVector: vec(1), filters: [], limit: 10, offset: 0,
+      createdAt: { gte: 1767225600 },
+      updatedAt: { lte: 1767268800 },
+    });
+    expect(total).toBe(0);
   });
 });
 
@@ -337,5 +367,122 @@ describe('searchItems — bbox wider than a hemisphere', () => {
   it('a realistic viewport is unaffected', async () => {
     const { rows } = await run({ minLat: 12.9, minLng: 77.5, maxLat: 13.0, maxLng: 77.7 });
     expect(rows.map((r) => r.item_id).sort()).toEqual([B_IN, B_N, B_S, B_E, B_W].sort());
+  });
+});
+
+const actNet = { item_network: 'act_net', item_domain: 'provider', item_type: 'job_1.0', sourceUpdatedAtEpoch: '1700000000' };
+const P1 = 'a1000000-0000-4000-8000-000000000001';
+const P2 = 'a2000000-0000-4000-8000-000000000002';
+const J = (n: number) => `b${n}000000-0000-4000-8000-00000000000${n}`;
+const CLOSED = ['accepted', 'completed', 'cancelled', 'rejected', 'declined', 'withdrawn', 'not_selected', 'shortlisted', 'expired'];
+const CREATE = { field: 'action_status' as const, values: CLOSED, negate: true };
+const REJECT = { field: 'action_status' as const, values: ['not_selected', 'declined'], negate: false };
+const APPLY = { field: 'action_type' as const, values: ['apply'], negate: false };
+const SEP_START = 1788220800;
+const SEP_END = 1790812799;
+
+beforeAll(async () => {
+  await createItemActionsTable(sql);
+  const repo = new ItemSearchRepo(sql, N);
+  for (const n of [1, 2, 3, 4, 5, 6]) {
+    await sql`INSERT INTO items (item_network,item_domain,item_type,item_id,created_at)
+      VALUES (${actNet.item_network},${actNet.item_domain},${actNet.item_type},${J(n)},${`2026-0${n}-01T00:00:00Z`})`;
+    await repo.upsert({ ...actNet, item_id: J(n), embedding: vec(1), locations: [], lifecycleStatus: 'live', modelVersion: 'm', contentHash: J(n) });
+  }
+  await sql`INSERT INTO item_actions (partition_network,action_type,action_status,source_item_id,target_item_id,remarks,created_at,updated_at) VALUES
+    ('act_net','apply','submitted',${P1},${J(2)},'private note','2026-11-18T00:00:00Z','2026-11-18T00:00:00Z'),
+    ('act_net','connect','invited',${J(5)},${P1},NULL,'2026-11-15T00:00:00Z','2026-11-15T00:00:00Z'),
+    ('act_net','apply','not_selected',${P1},${J(6)},NULL,'2026-09-10T00:00:00Z','2026-09-20T00:00:00Z'),
+    ('act_net','apply','submitted',${P1},${J(6)},NULL,'2026-11-01T00:00:00Z','2026-11-01T00:00:00Z'),
+    ('act_net','apply','not_selected',${P1},${J(4)},NULL,'2026-09-05T00:00:00Z','2026-09-25T00:00:00Z'),
+    ('act_net','apply','submitted',${P2},${J(1)},NULL,'2026-11-10T00:00:00Z','2026-11-10T00:00:00Z'),
+    ('other_net','apply','submitted',${P1},${J(3)},NULL,'2026-11-10T00:00:00Z','2026-11-10T00:00:00Z')`;
+});
+
+describe('searchItems — the anchor\'s latest action', () => {
+  const run = (filters: ActionFilter[], extra: Record<string, unknown> = {}, include = false) =>
+    searchItems(sql, { ...actNet, filters: [], sort: 'newest', limit: 50, offset: 0, action: { anchorId: P1, filters, include }, ...extra });
+  const ids = (rows: { item_id: string }[]) => rows.map((r) => r.item_id);
+
+  it('excluding the create group hides jobs whose latest action is pending, in either direction', async () => {
+    const { rows, total } = await run([{ exclude: true, anyOf: [CREATE] }]);
+    expect(ids(rows)).toEqual([J(4), J(3), J(1)]);
+    expect(total).toBe(3);
+  });
+
+  it('judges only the latest action: J6 was not selected, then re-applied, so excluding reject keeps it', async () => {
+    const { rows } = await run([{ exclude: true, anyOf: [REJECT] }]);
+    expect(ids(rows)).toEqual([J(6), J(5), J(3), J(2), J(1)]);
+  });
+
+  it('a list of groups excludes any of them', async () => {
+    const { rows, total } = await run([{ exclude: true, anyOf: [CREATE, REJECT] }]);
+    expect(ids(rows)).toEqual([J(3), J(1)]);
+    expect(total).toBe(2);
+  });
+
+  it('include keeps only matching jobs, and several clauses all apply to the same latest action', async () => {
+    const { rows } = await run([{ exclude: false, anyOf: [CREATE] }, { exclude: false, anyOf: [APPLY] }]);
+    expect(ids(rows)).toEqual([J(6), J(2)]);
+  });
+
+  it('filters the latest action by created_at: applied in September', async () => {
+    const { rows } = await run([
+      { exclude: false, anyOf: [APPLY] },
+      { exclude: false, anyOf: [{ field: 'created_at', range: { gte: SEP_START } }] },
+      { exclude: false, anyOf: [{ field: 'created_at', range: { lte: SEP_END } }] },
+    ]);
+    expect(ids(rows)).toEqual([J(4)]);
+  });
+
+  it('filters the latest action by its status date: rejected in September', async () => {
+    const { rows } = await run([
+      { exclude: false, anyOf: [REJECT] },
+      { exclude: false, anyOf: [{ field: 'updated_at', range: { gte: SEP_START, lte: SEP_END } }] },
+    ]);
+    expect(ids(rows)).toEqual([J(4)]);
+  });
+
+  it('ignores other anchors\' actions and actions in other networks', async () => {
+    const { rows } = await run([{ exclude: false, anyOf: [CREATE] }]);
+    expect(ids(rows)).not.toContain(J(1));
+    expect(ids(rows)).not.toContain(J(3));
+  });
+
+  it('filters before paging, so pages stay full and total counts only matches', async () => {
+    const first = await run([{ exclude: true, anyOf: [CREATE] }], { limit: 2, offset: 0 });
+    const second = await run([{ exclude: true, anyOf: [CREATE] }], { limit: 2, offset: 2 });
+    expect(ids(first.rows)).toEqual([J(4), J(3)]);
+    expect(ids(second.rows)).toEqual([J(1)]);
+    expect(first.total).toBe(3);
+    expect(second.total).toBe(3);
+  });
+
+  it('returns the latest action per result only when asked, with no other action columns', async () => {
+    const { rows } = await run([], {}, true);
+    const byId = Object.fromEntries(rows.map((r) => [r.item_id, r.action]));
+    expect(rows).toHaveLength(6);
+    expect(byId[J(2)]).toEqual({ type: 'apply', status: 'submitted', created_at: '2026-11-18T00:00:00.000Z', updated_at: '2026-11-18T00:00:00.000Z' });
+    expect(byId[J(5)]).toMatchObject({ type: 'connect', status: 'invited' });
+    expect(byId[J(6)]).toMatchObject({ type: 'apply', status: 'submitted', created_at: '2026-11-01T00:00:00.000Z' });
+    expect(byId[J(4)]).toEqual({ type: 'apply', status: 'not_selected', created_at: '2026-09-05T00:00:00.000Z', updated_at: '2026-09-25T00:00:00.000Z' });
+    expect(byId[J(1)]).toBeUndefined();
+    expect(byId[J(3)]).toBeUndefined();
+
+    const plain = await run([]);
+    expect(plain.rows.every((r) => r.action === undefined)).toBe(true);
+  });
+
+  it('an anchor with no actions: exclude keeps everything, include returns nothing', async () => {
+    const none = (filters: ActionFilter[]) =>
+      searchItems(sql, { ...actNet, filters: [], limit: 50, offset: 0, action: { anchorId: 'c0000000-0000-4000-8000-000000000000', filters, include: false } });
+    expect((await none([{ exclude: true, anyOf: [CREATE] }])).total).toBe(6);
+    expect((await none([{ exclude: false, anyOf: [CREATE] }])).total).toBe(0);
+  });
+
+  it('an empty status set (a group the network has no bucket for) matches nothing', async () => {
+    const empty = { field: 'action_status' as const, values: [], negate: false };
+    expect((await run([{ exclude: true, anyOf: [empty] }])).total).toBe(6);
+    expect((await run([{ exclude: false, anyOf: [empty] }])).total).toBe(0);
   });
 });

@@ -37,6 +37,29 @@ describe('NetworkRegistry', () => {
     // right domains, wrong source network (no actions defined under blue_dot in the fixture)
     expect(reg.isInteractionAllowedAcross('blue_dot', 'seeker', 'blue_dot', 'aggregator')).toBe(false);
   });
+  it('lists the action types defined in network.json', () => {
+    expect(reg.actionTypes('action_rules').sort()).toEqual(['apply', 'connect']);
+    expect(reg.actionTypes('ghost')).toEqual([]);
+  });
+  it('accept, reject and cancel groups are the matching metric_categories buckets across interactions', () => {
+    expect(reg.statusGroup('action_rules', 'accept')).toEqual({ statuses: ['shortlisted', 'accepted'], negate: false });
+    expect(reg.statusGroup('action_rules', 'reject')).toEqual({ statuses: ['not_selected', 'declined'], negate: false });
+    expect(reg.statusGroup('action_rules', 'cancel')).toEqual({ statuses: ['withdrawn', 'expired'], negate: false });
+  });
+  it('create group = not closed: the closed buckets plus the fixed list, negated', () => {
+    const create = reg.statusGroup('action_rules', 'create');
+    expect(create.negate).toBe(true);
+    expect([...create.statuses].sort()).toEqual([
+      'accepted', 'cancelled', 'completed', 'declined', 'expired', 'not_selected', 'rejected', 'shortlisted', 'withdrawn',
+    ]);
+    for (const s of ['created', 'submitted', 'invited']) expect(create.statuses).not.toContain(s);
+  });
+  it('a network without metric_categories has only the fixed closed list and empty buckets', () => {
+    expect([...reg.statusGroup('purple_dot', 'create').statuses].sort()).toEqual([
+      'accepted', 'cancelled', 'completed', 'declined', 'rejected', 'withdrawn',
+    ]);
+    expect(reg.statusGroup('purple_dot', 'reject')).toEqual({ statuses: [], negate: false });
+  });
   it('knows whether a domain is served', () => {
     expect(reg.hasDomain('purple_dot', 'provider')).toBe(true);
     expect(reg.hasDomain('purple_dot', 'ghost')).toBe(false);
