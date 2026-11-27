@@ -23,3 +23,13 @@ export async function startPostgres(): Promise<StartedPostgreSqlContainer> {
 export function sqlClient(url: string) {
   return postgres(url, { max: 4 });
 }
+
+export async function createItemActionsTable(sql: ReturnType<typeof sqlClient>) {
+  await sql`CREATE TABLE item_actions (
+    partition_network text NOT NULL, action_type text NOT NULL,
+    action_id uuid NOT NULL DEFAULT gen_random_uuid(), action_status text NOT NULL,
+    source_item_id uuid NOT NULL, target_item_id uuid NOT NULL,
+    requirements_snapshot jsonb NOT NULL DEFAULT '{}', remarks text,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (partition_network, action_type, action_id))`;
+}
